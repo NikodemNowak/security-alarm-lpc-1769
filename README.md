@@ -2,6 +2,12 @@
 
 This project implements a security alarm system on the NXP LPC1769 microcontroller. It utilizes various peripherals and sensors to detect intrusions and alert the user.
 
+## Documentation
+
+For a more detailed description of the project, including design choices, schematics, and a full report (in Polish), please see the project documentation:
+
+*   [Project Documentation (PDF)](./Dokumentacja_system_alarmowy.pdf)
+
 ## Features
 
 *   **RFID Access Control:**
