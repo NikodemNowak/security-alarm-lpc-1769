@@ -1,0 +1,4 @@
+../src/eeprom.c:74:12:I2CWrite.isra	56	static
+../src/eeprom.c:110:6:eeprom_init	0	static
+../src/eeprom.c:129:9:eeprom_read	64	static
+../src/eeprom.c:165:9:eeprom_write	56	static

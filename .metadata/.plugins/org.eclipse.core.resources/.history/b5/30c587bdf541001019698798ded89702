@@ -1,0 +1,111 @@
+#include "lpc17xx_pinsel.h"
+#include "lpc17xx_gpio.h"
+#include "lpc17xx_timer.h"
+#include "ultrasonic.h"
+
+// Zewnętrzna funkcja opóźniająca, zakładamy, że jest dostępna
+// (np. z Twojego kodu lub biblioteki systemowej)
+extern void Timer0_us_Wait(uint32_t us);
+extern uint32_t SystemCoreClock; // Zwykle dostępne globalnie
+
+static void timer1_for_ultrasonic_init(void) {
+    TIM_TIMERCFG_Type TIM_ConfigStruct;
+
+    // 1. Włącz zasilanie dla Timer1
+    LPC_SC->PCONP |= (1 << 2);
+
+    // 2. Skonfiguruj PCLK dla Timer1
+    // Ustawmy PCLK_TIMER1 na CCLK (np. 100MHz)
+    // PCLKSEL0, bity 5:4 dla TIMER1 (01 -> CCLK)
+    LPC_SC->PCLKSEL0 = (LPC_SC->PCLKSEL0 & ~(0x3 << 4)) | (0x01 << 4);
+
+    TIM_ConfigStruct.PrescaleOption = TIM_PRESCALE_USVAL;
+    // Aby TC (Timer Counter) inkrementował się co 1µs:
+    // PrescaleValue = (PCLK_TIMER1 / 1,000,000) - 1
+    // Jeśli PCLK_TIMER1 = 100MHz, PrescaleValue = (100,000,000 / 1,000,000) - 1 = 99
+    TIM_ConfigStruct.PrescaleValue = (SystemCoreClock / 1000000) - 1;
+
+    TIM_Init(LPC_TIM1, TIM_TIMER_MODE, &TIM_ConfigStruct);
+
+    // Timer zostanie włączony/zresetowany bezpośrednio przed pomiarem
+}
+
+void ultrasonic_init(void) {
+    PINSEL_CFG_Type PinCfg;
+
+    // Konfiguracja pinu TRIG jako wyjście
+    PinCfg.Funcnum = 0; // GPIO
+    PinCfg.OpenDrain = PINSEL_PINMODE_NORMAL;
+    PinCfg.Pinmode = PINSEL_PINMODE_TRISTATE; // Lub PULLDOWN jeśli preferowane
+    PinCfg.Portnum = ULTRASONIC_TRIG_PORT;
+    PinCfg.Pinnum = ULTRASONIC_TRIG_PIN;
+    PINSEL_ConfigPin(&PinCfg);
+    GPIO_SetDir(ULTRASONIC_TRIG_PORT, (1 << ULTRASONIC_TRIG_PIN), 1); // 1 = output
+    GPIO_ClearValue(ULTRASONIC_TRIG_PORT, (1 << ULTRASONIC_TRIG_PIN)); // Stan niski
+
+    // Konfiguracja pinu ECHO jako wejście (PAMIĘTAJ O DZIELNIKU NAPIĘCIA!)
+    PinCfg.Funcnum = 0; // GPIO
+    PinCfg.OpenDrain = PINSEL_PINMODE_NORMAL;
+    // Z dzielnikiem napięcia, który ma rezystor do GND, pin będzie miał
+    // zdefiniowany stan niski. Można użyć TRISTATE lub PULLDOWN.
+    PinCfg.Pinmode = PINSEL_PINMODE_TRISTATE;
+    PinCfg.Portnum = ULTRASONIC_ECHO_PORT;
+    PinCfg.Pinnum = ULTRASONIC_ECHO_PIN;
+    PINSEL_ConfigPin(&PinCfg);
+    GPIO_SetDir(ULTRASONIC_ECHO_PORT, (1 << ULTRASONIC_ECHO_PIN), 0); // 0 = input
+
+    timer1_for_ultrasonic_init();
+}
+
+uint32_t ultrasonic_get_distance_cm(void) {
+    volatile uint32_t echo_start_time = 0;
+    volatile uint32_t echo_duration = 0;
+    uint32_t distance_cm = 0;
+
+    // 1. Wyślij impuls TRIG (minimum 10µs)
+    GPIO_SetValue(ULTRASONIC_TRIG_PORT, (1 << ULTRASONIC_TRIG_PIN));
+    Timer0_us_Wait(12); // Trochę więcej niż 10µs dla pewności
+    GPIO_ClearValue(ULTRASONIC_TRIG_PORT, (1 << ULTRASONIC_TRIG_PIN));
+
+    // 2. Przygotuj i uruchom Timer1 do pomiaru
+    LPC_TIM1->TCR = TIM_RESET_COUNTER; // Zresetuj licznik (TC i Prescale Counter)
+    LPC_TIM1->TCR = TIM_ENABLE_COUNTER; // Włącz licznik
+
+    // 3. Czekaj na początek impulsu ECHO (stan wysoki) z timeoutem
+    // Timeout np. 30ms (30000 µs)
+    uint32_t timeout_echo_start = LPC_TIM1->TC + 30000;
+    while (!(GPIO_ReadValue(ULTRASONIC_ECHO_PORT) & (1 << ULTRASONIC_ECHO_PIN))) {
+        if (LPC_TIM1->TC >= timeout_echo_start) {
+            LPC_TIM1->TCR = TIM_DISABLE_COUNTER; // Wyłącz timer
+            return ULTRASONIC_TIMEOUT_ECHO_START;
+        }
+    }
+    echo_start_time = LPC_TIM1->TC;
+
+    // 4. Czekaj na koniec impulsu ECHO (stan niski) z timeoutem
+    // Maksymalny czas echa dla 4m to ~23200 µs. Timeout np. 40ms (40000 µs).
+    uint32_t timeout_echo_pulse = echo_start_time + 40000;
+    while (GPIO_ReadValue(ULTRASONIC_ECHO_PORT) & (1 << ULTRASONIC_ECHO_PIN)) {
+        if (LPC_TIM1->TC >= timeout_echo_pulse) {
+            LPC_TIM1->TCR = TIM_DISABLE_COUNTER; // Wyłącz timer
+            return ULTRASONIC_TIMEOUT_ECHO_PULSE;
+        }
+    }
+    echo_duration = LPC_TIM1->TC - echo_start_time;
+
+    LPC_TIM1->TCR = TIM_DISABLE_COUNTER; // Wyłącz Timer1
+
+    // 5. Oblicz odległość
+    // distance_cm = echo_duration / 58.3 (lub 58 dla uproszczenia)
+    distance_cm = echo_duration / 58;
+
+    // Sprawdzenie zasięgu (np. 2cm do 400cm)
+    if (distance_cm < 2 || distance_cm > 400) {
+        // Możesz chcieć zwrócić samą wartość, jeśli jest to np. 500cm,
+        // lub specjalny kod, jeśli to oznacza błąd/poza efektywnym zasięgiem.
+        // Dla HC-SR04, wartości powyżej 400cm są mało wiarygodne.
+        // return ULTRASONIC_OUT_OF_RANGE; // Opcjonalnie
+    }
+
+    return distance_cm;
+}

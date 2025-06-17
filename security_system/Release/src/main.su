@@ -1,0 +1,4 @@
+../src/main.c:249:13:playNote_internal	24	static
+../src/main.c:408:13:writeCommand_internal	40	static
+../src/main.c:454:13:checkLightAndInversion_internal	8	static
+../src/main.c:645:5:main	88	static

@@ -1,0 +1,3 @@
+../src/lpc17xx_nvic.c:67:6:NVIC_DeInit	0	static
+../src/lpc17xx_nvic.c:102:6:NVIC_SCBDeInit	0	static
+../src/lpc17xx_nvic.c:128:6:NVIC_SetVTOR	0	static

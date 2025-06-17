@@ -1,0 +1,10 @@
+../src/ocf_lpc176x_lib.c:29:6:initUART0	0	static
+../src/ocf_lpc176x_lib.c:40:6:initTimer0	0	static
+../src/ocf_lpc176x_lib.c:54:6:startTimer0	0	static
+../src/ocf_lpc176x_lib.c:60:14:stopTimer0	0	static
+../src/ocf_lpc176x_lib.c:67:6:delayUS	8	static
+../src/ocf_lpc176x_lib.c:78:6:delayMS	8	static
+../src/ocf_lpc176x_lib.c:86:6:U0Write	0	static
+C:/nxp/MCUXpressoIDE_24.12.148/ide/plugins/com.nxp.mcuxpresso.tools.win32_24.12.0.202407110909/tools/arm-none-eabi/include/stdio.h:220:5:fputc	8	static
+../src/ocf_lpc176x_lib.c:101:6:U0Read	0	static
+C:/nxp/MCUXpressoIDE_24.12.148/ide/plugins/com.nxp.mcuxpresso.tools.win32_24.12.0.202407110909/tools/arm-none-eabi/include/stdio.h:218:5:fgetc	8	static

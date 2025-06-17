@@ -1,0 +1,31 @@
+14:43:21 **** Incremental Build of configuration Debug for project SecurityAlarm ****
+make -r -j16 all 
+Building file: ../src/SecurityAlarm.c
+Invoking: MCU C Compiler
+arm-none-eabi-gcc -DDEBUG -D__CODE_RED -DCORE_M3 -D__LPC17XX__ -D__REDLIB__ -I"C:\Users\student\Documents\E13_alarm\Lib_EaBaseBoard\inc" -I"C:\Users\student\Documents\E13_alarm\Lib_CMSISv1p30_LPC17xx\inc" -I"C:\Users\student\Documents\E13_alarm\Lib_MCU\inc" -O0 -fno-common -g3 -gdwarf-4 -Wall -c -fmessage-length=0 -fno-builtin -ffunction-sections -fdata-sections -fmerge-constants -fmacro-prefix-map="../src/"= -mcpu=cortex-m3 -mthumb -fstack-usage -specs=redlib.specs -MMD -MP -MF"src/SecurityAlarm.d" -MT"src/SecurityAlarm.o" -MT"src/SecurityAlarm.d" -o "src/SecurityAlarm.o" "../src/SecurityAlarm.c"
+In file included from ../src/SecurityAlarm.c:14:
+C:\Users\student\Documents\E13_alarm\Lib_EaBaseBoard\inc/rgb.h:18:19: error: unknown type name 'uint8_t'
+   18 | void rgb_setLeds (uint8_t ledMask);
+      |                   ^~~~~~~
+C:\Users\student\Documents\E13_alarm\Lib_EaBaseBoard\inc/rgb.h:1:1: note: 'uint8_t' is defined in header '<stdint.h>'; did you forget to '#include <stdint.h>'?
+  +++ |+#include <stdint.h>
+    1 | /*****************************************************************************
+../src/SecurityAlarm.c: In function 'main':
+../src/SecurityAlarm.c:32:9: warning: implicit declaration of function 'rgb_setLeds' [-Wimplicit-function-declaration]
+   32 |         rgb_setLeds(RGB_RED);
+      |         ^~~~~~~~~~~
+../src/SecurityAlarm.c:26:13: warning: unused variable 'b' [-Wunused-variable]
+   26 |     uint8_t b = 0;
+      |             ^
+../src/SecurityAlarm.c:25:13: warning: unused variable 'g' [-Wunused-variable]
+   25 |     uint8_t g = 0;
+      |             ^
+../src/SecurityAlarm.c:24:13: warning: unused variable 'r' [-Wunused-variable]
+   24 |     uint8_t r = 0;
+      |             ^
+make[1]: *** [src/subdir.mk:26: src/SecurityAlarm.o] Error 1
+make: *** [makefile:35: all] Error 2
+"make -r -j16 all" terminated with exit code 2. Build might be incomplete.
+
+14:43:21 Build Failed. 3 errors, 4 warnings. (took 204ms)
+

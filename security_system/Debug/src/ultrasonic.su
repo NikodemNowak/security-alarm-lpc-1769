@@ -1,0 +1,3 @@
+../src/ultrasonic.c:14:13:timer1_for_ultrasonic_init	32	static
+../src/ultrasonic.c:52:6:ultrasonic_init	16	static
+../src/ultrasonic.c:77:10:ultrasonic_get_distance_cm	32	static

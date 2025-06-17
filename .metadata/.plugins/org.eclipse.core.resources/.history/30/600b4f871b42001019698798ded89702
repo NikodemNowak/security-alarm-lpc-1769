@@ -1,0 +1,207 @@
+#include "lpc17xx_pinsel.h"
+#include "lpc17xx_i2c.h"
+#include "lpc17xx_gpio.h"
+#include "lpc17xx_timer.h"
+#include "lpc17xx_ssp.h"
+
+#include "light.h"
+#include "oled.h"
+
+#include <cr_section_macros.h>
+#include <stdio.h>
+
+// **PRÓG CIEMNOŚCI - wartość w luxach poniżej której włącza się inwersja**
+#define DARK_THRESHOLD 50   // 50 lux lub mniej = ciemno
+
+static void init_i2c(void)
+{
+    PINSEL_CFG_Type PinCfg;
+
+    // Konfiguracja pinów I2C2 (P0.10, P0.11)
+    PinCfg.Funcnum = 2;
+    PinCfg.Pinnum = 10;
+    PinCfg.Portnum = 0;
+    PINSEL_ConfigPin(&PinCfg);
+    PinCfg.Pinnum = 11;
+    PINSEL_ConfigPin(&PinCfg);
+
+    // Inicjalizacja I2C2 na 100kHz
+    I2C_Init(LPC_I2C2, 100000);
+    I2C_Cmd(LPC_I2C2, ENABLE);
+}
+
+static void init_ssp(void)
+{
+    SSP_CFG_Type SSP_ConfigStruct;
+    PINSEL_CFG_Type PinCfg;
+
+    // P0.7 - SCK
+    PinCfg.Funcnum = 2;
+    PinCfg.OpenDrain = 0;
+    PinCfg.Pinmode = 0;
+    PinCfg.Portnum = 0;
+    PinCfg.Pinnum = 7;
+    PINSEL_ConfigPin(&PinCfg);
+
+    // P0.8 - MISO
+    PinCfg.Pinnum = 8;
+    PINSEL_ConfigPin(&PinCfg);
+
+    // P0.9 - MOSI
+    PinCfg.Pinnum = 9;
+    PINSEL_ConfigPin(&PinCfg);
+
+    // P2.2 - CS (dla OLED)
+    PinCfg.Funcnum = 0;
+    PinCfg.Portnum = 2;
+    PinCfg.Pinnum = 2;
+    PINSEL_ConfigPin(&PinCfg);
+
+    SSP_ConfigStructInit(&SSP_ConfigStruct);
+    SSP_Init(LPC_SSP1, &SSP_ConfigStruct);
+    SSP_Cmd(LPC_SSP1, ENABLE);
+}
+
+// **FUNKCJA DO WYSYŁANIA KOMEND OLED - skopiowana z oled.c**
+static void writeCommand(uint8_t data)
+{
+    SSP_DATA_SETUP_Type xferConfig;
+
+    // OLED_CMD() - ustawienie linii D/C na LOW (komenda)
+    GPIO_ClearValue(2, (1<<7));
+
+    // OLED_CS_ON() - aktywacja Chip Select
+    GPIO_ClearValue(0, (1<<6));
+
+    xferConfig.tx_data = &data;
+    xferConfig.rx_data = NULL;
+    xferConfig.length  = 1;
+
+    SSP_ReadWrite(LPC_SSP1, &xferConfig, SSP_TRANSFER_POLLING);
+
+    // OLED_CS_OFF() - dezaktywacja Chip Select
+    GPIO_SetValue(0, (1<<6));
+}
+
+// **PRAWDZIWA FUNKCJA inwersji używająca komend SSD1305**
+void oled_setInversion(uint8_t inverted) {
+    if (inverted) {
+        // **Włącz inwersję - komenda 0xA7**
+        writeCommand(0xA7);
+        printf("Wlaczanie inwersji ekranu (komenda 0xA7) - tryb nocny\n");
+    } else {
+        // **Wyłącz inwersję - komenda 0xA6**
+        writeCommand(0xA6);
+        printf("Wylaczanie inwersji ekranu (komenda 0xA6) - tryb dzienny\n");
+    }
+}
+
+// **FUNKCJA do aktualizacji wyświetlacza na podstawie poziomu światła**
+void updateDisplayBasedOnLight(uint32_t lightLevel) {
+    char lightStr[20];
+    static uint8_t lastInversionState = 0;  // 0 = normal, 1 = inverted
+    uint8_t currentInversionState = 0;
+
+    // **Sprawdź czy powinien być tryb nocny**
+    if (lightLevel <= DARK_THRESHOLD) {
+        currentInversionState = 1;  // Tryb nocny (inwersja)
+    } else {
+        currentInversionState = 0;  // Tryb dzienny (normalny)
+    }
+
+    // **Przełącz inwersję tylko gdy się zmieniła**
+    if (currentInversionState != lastInversionState) {
+        oled_setInversion(currentInversionState);
+        lastInversionState = currentInversionState;
+
+        // **Krótka pauza po zmianie trybu**
+        Timer0_Wait(100);
+    }
+
+    // **Wyczyść ekran i wyświetl informacje**
+    // Teraz inwersja jest sprzętowa, więc zawsze używamy standardowych kolorów
+    oled_clearScreen(OLED_COLOR_WHITE);
+
+    // **Tekst jest automatycznie odwrócony przez sprzętową inwersję**
+    oled_putString(1, 1, (uint8_t*)"CZUJNIK SWIATLA", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+
+    if (currentInversionState) {
+        oled_putString(1, 10, (uint8_t*)"TRYB NOCNY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    } else {
+        oled_putString(1, 10, (uint8_t*)"TRYB DZIENNY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    }
+
+    sprintf(lightStr, "Swiatlo: %d lux", (int)lightLevel);
+    oled_putString(1, 20, (uint8_t*)lightStr, OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+
+    sprintf(lightStr, "Prog: %d lux", DARK_THRESHOLD);
+    oled_putString(1, 30, (uint8_t*)lightStr, OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+
+    if (currentInversionState) {
+        oled_putString(1, 45, (uint8_t*)"CIEMNO - INWERSJA", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    } else {
+        oled_putString(1, 45, (uint8_t*)"JASNO - NORMALNY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    }
+
+    // **Dodatkowe info o sprzętowej inwersji**
+    if (currentInversionState) {
+        oled_putString(1, 55, (uint8_t*)"(Sprzet: 0xA7)", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    } else {
+        oled_putString(1, 55, (uint8_t*)"(Sprzet: 0xA6)", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    }
+}
+
+int main(void) {
+    uint32_t lightLevel = 0;
+    uint32_t measurementCounter = 0;
+
+    // **Inicjalizacja peryferiów**
+    init_i2c();        // I2C dla czujnika światła
+    init_ssp();        // SPI dla OLED
+    oled_init();       // Inicjalizacja OLED
+    light_init();      // Inicjalizacja czujnika światła
+    light_enable();    // Włączenie czujnika światła
+
+    printf("=== TEST CZUJNIKA SWIATLA I SPRZĘTOWEJ INWERSJI OLED ===\n");
+    printf("Prog ciemnosci: %d lux\n", DARK_THRESHOLD);
+    printf("Poniżej progu = tryb nocny (komenda 0xA7 - inwersja)\n");
+    printf("Powyżej progu = tryb dzienny (komenda 0xA6 - normalny)\n\n");
+
+    // **Ekran startowy**
+    oled_clearScreen(OLED_COLOR_WHITE);
+    oled_putString(1, 1, (uint8_t*)"CZUJNIK SWIATLA", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    oled_putString(1, 10, (uint8_t*)"INICJALIZACJA...", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    oled_putString(1, 20, (uint8_t*)"Czekaj 2s", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    oled_putString(1, 30, (uint8_t*)"Test sprzętowej", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    oled_putString(1, 40, (uint8_t*)"inwersji SSD1305", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+
+    Timer0_Wait(2000);  // Poczekaj 2 sekundy na stabilizację czujnika
+
+    while(1) {
+        // **Odczytaj poziom światła co 500ms**
+        if (measurementCounter >= 5) {  // 5 * 100ms = 500ms
+            measurementCounter = 0;
+
+            // **Odczytaj czujnik światła**
+            lightLevel = light_read();
+
+            // **Loguj na konsoli**
+            printf("Poziom swiatla: %d lux", (int)lightLevel);
+            if (lightLevel <= DARK_THRESHOLD) {
+                printf(" -> CIEMNO (sprzętowa inwersja 0xA7)\n");
+            } else {
+                printf(" -> JASNO (normalny tryb 0xA6)\n");
+            }
+
+            // **Aktualizuj wyświetlacz**
+            updateDisplayBasedOnLight(lightLevel);
+
+        } else {
+            measurementCounter++;
+        }
+
+        Timer0_Wait(100);  // Główna pętla co 100ms
+    }
+
+    return 0;
+}

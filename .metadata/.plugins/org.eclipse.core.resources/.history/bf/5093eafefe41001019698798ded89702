@@ -1,0 +1,180 @@
+#include "lpc17xx_pinsel.h"
+#include "lpc17xx_gpio.h"
+#include "lpc17xx_timer.h"
+#include "ultrasonic.h"
+
+// Zakładamy, że Timer0_us_Wait jest zdefiniowany gdzieś indziej w projekcie
+// i jest wystarczająco precyzyjny.
+extern void Timer0_us_Wait(uint32_t us);
+
+// Zmienna SystemCoreClock jest zwykle dostępna globalnie po dołączeniu lpc17xx.h
+// i zainicjowaniu systemu (np. w system_LPC17xx.c)
+extern uint32_t SystemCoreClock;
+
+static void timer1_for_ultrasonic_init(void) {
+    TIM_TIMERCFG_Type TIM_ConfigStruct;
+    TIM_MATCHCFG_Type TIM_MatchConfigStruct; // Nie używamy przerwań od match, ale inicjalizacja może być potrzebna
+
+    // 1. Włącz zasilanie dla Timer1 (PCONP[2] = 1)
+    LPC_SC->PCONP |= (1 << 2);
+
+    // 2. Skonfiguruj PCLK dla Timer1
+    // Ustawmy PCLK_TIMER1 na CCLK (np. 100MHz, jeśli SystemCoreClock = 100MHz)
+    // PCLKSEL0, bity 5:4 dla TIMER1 (01 -> CCLK/1, 10 -> CCLK/2, 11 -> CCLK/8, 00 -> CCLK/4)
+    // Domyślnie jest CCLK/4. Ustawmy na CCLK/1 dla najwyższej rozdzielczości preskalera.
+    LPC_SC->PCLKSEL0 = (LPC_SC->PCLKSEL0 & ~(0x3 << 4)) | (0x01 << 4);
+
+    // Konfiguracja timera
+    TIM_ConfigStruct.PrescaleOption = TIM_PRESCALE_USVAL;
+    // Aby TC (Timer Counter) inkrementował się co 1µs:
+    // PrescaleValue = (PCLK_TIMER1 / 1,000,000) - 1
+    // Jeśli PCLK_TIMER1 (po PCLKSEL0) = SystemCoreClock, to:
+    TIM_ConfigStruct.PrescaleValue = (SystemCoreClock / 1000000) - 1;
+
+    // Inicjalizacja timera w trybie timera
+    TIM_Init(LPC_TIM1, TIM_TIMER_MODE, &TIM_ConfigStruct);
+
+    // Opcjonalnie, jeśli biblioteka tego wymaga, można skonfigurować Match,
+    // chociaż nie będziemy go aktywnie używać do generowania przerwań tutaj.
+    TIM_MatchConfigStruct.MatchChannel = 0;
+    TIM_MatchConfigStruct.IntOnMatch = DISABLE;
+    TIM_MatchConfigStruct.StopOnMatch = DISABLE;
+    TIM_MatchConfigStruct.ResetOnMatch = DISABLE;
+    TIM_MatchConfigStruct.ExtMatchOutputType = TIM_EXTMATCH_NOTHING;
+    TIM_MatchConfigStruct.MatchValue = 0; // Nieistotne
+    TIM_ConfigMatch(LPC_TIM1, &TIM_MatchConfigStruct);
+
+    // Timer zostanie włączony/zresetowany bezpośrednio przed pomiarem
+    TIM_Cmd(LPC_TIM1, DISABLE); // Upewnij się, że jest wyłączony na starcie
+    TIM_ResetCounter(LPC_TIM1); // Zresetuj licznik
+}
+
+void ultrasonic_init(void) {
+    PINSEL_CFG_Type PinCfg;
+
+    // Konfiguracja pinu TRIG jako wyjście GPIO
+    PinCfg.Funcnum = PINSEL_FUNC_0; // GPIO
+    PinCfg.OpenDrain = PINSEL_PINMODE_NORMAL;
+    PinCfg.Pinmode = PINSEL_PINMODE_TRISTATE; // Lub PULLDOWN
+    PinCfg.Portnum = ULTRASONIC_TRIG_PORT;
+    PinCfg.Pinnum = ULTRASONIC_TRIG_PIN;
+    PINSEL_ConfigPin(&PinCfg);
+    GPIO_SetDir(ULTRASONIC_TRIG_PORT, (1 << ULTRASONIC_TRIG_PIN), 1); // 1 = output
+    GPIO_ClearValue(ULTRASONIC_TRIG_PORT, (1 << ULTRASONIC_TRIG_PIN)); // Początkowy stan niski
+
+    // Konfiguracja pinu ECHO jako wejście GPIO (PAMIĘTAJ O DZIELNIKU NAPIĘCIA!)
+    PinCfg.Funcnum = PINSEL_FUNC_0; // GPIO
+    PinCfg.OpenDrain = PINSEL_PINMODE_NORMAL;
+    PinCfg.Pinmode = PINSEL_PINMODE_TRISTATE; // Z dzielnikiem napięcia, pull-up/down nie jest krytyczny
+    PinCfg.Portnum = ULTRASONIC_ECHO_PORT;
+    PinCfg.Pinnum = ULTRASONIC_ECHO_PIN;
+    PINSEL_ConfigPin(&PinCfg);
+    GPIO_SetDir(ULTRASONIC_ECHO_PORT, (1 << ULTRASONIC_ECHO_PIN), 0); // 0 = input
+
+    timer1_for_ultrasonic_init();
+}
+
+uint32_t ultrasonic_get_distance_cm(void) {
+    volatile uint32_t echo_start_time_us = 0;
+    volatile uint32_t echo_end_time_us = 0;
+    volatile uint32_t echo_duration_us = 0;
+    uint32_t distance_cm = 0;
+    uint32_t timeout_counter;
+
+    // DEBUG 1: Sprawdź stan ECHO przed wysłaniem TRIG
+    uint32_t echo_before = GPIO_ReadValue(ULTRASONIC_ECHO_PORT) & (1 << ULTRASONIC_ECHO_PIN);
+    if (echo_before != 0) {
+        return 9990; // Debug: ECHO już wysoki przed startem - błąd okablowania
+    }
+
+    // 1. Wyślij impuls TRIG (minimum 10µs, zalecane 12-15µs dla pewności)
+    GPIO_SetValue(ULTRASONIC_TRIG_PORT, (1 << ULTRASONIC_TRIG_PIN));
+    Timer0_us_Wait(15); // Użyj precyzyjnego opóźnienia
+    GPIO_ClearValue(ULTRASONIC_TRIG_PORT, (1 << ULTRASONIC_TRIG_PIN));
+
+    // 2. Przygotuj i uruchom Timer1 do pomiaru
+    TIM_ResetCounter(LPC_TIM1); // Zresetuj licznik (TC i Prescale Counter)
+    TIM_Cmd(LPC_TIM1, ENABLE);  // Włącz licznik
+
+    // 3. Czekaj na początek impulsu ECHO (stan wysoki) z timeoutem
+    timeout_counter = 0;
+    while (!(GPIO_ReadValue(ULTRASONIC_ECHO_PORT) & (1 << ULTRASONIC_ECHO_PIN))) {
+        timeout_counter++;
+        if (timeout_counter > 300000) { // ~30ms timeout
+            TIM_Cmd(LPC_TIM1, DISABLE);
+            return ULTRASONIC_TIMEOUT_ECHO_START; // Błąd: timeout oczekiwania na start echa
+        }
+        // Krótka pauza żeby nie zabić procesora
+        if (timeout_counter % 1000 == 0) {
+            Timer0_us_Wait(1);
+        }
+    }
+    echo_start_time_us = LPC_TIM1->TC; // Zapisz czas startu impulsu ECHO
+
+    // DEBUG: Sprawdź czy timer działa
+    if (echo_start_time_us == 0) {
+        TIM_Cmd(LPC_TIM1, DISABLE);
+        return 9991; // Debug: Timer nie działa
+    }
+
+    // 4. Czekaj na koniec impulsu ECHO (stan niski) z timeoutem
+    timeout_counter = 0;
+    while (GPIO_ReadValue(ULTRASONIC_ECHO_PORT) & (1 << ULTRASONIC_ECHO_PIN)) {
+        timeout_counter++;
+        if (timeout_counter > 400000) { // ~40ms timeout
+            TIM_Cmd(LPC_TIM1, DISABLE);
+            return ULTRASONIC_TIMEOUT_ECHO_PULSE; // Błąd: timeout, echo za długie (poza zasięgiem lub błąd)
+        }
+        if (timeout_counter % 1000 == 0) {
+            Timer0_us_Wait(1);
+        }
+    }
+    echo_end_time_us = LPC_TIM1->TC; // Zapisz czas końca impulsu ECHO
+
+    TIM_Cmd(LPC_TIM1, DISABLE); // Zatrzymaj Timer1 po pomiarze
+
+    // 5. Oblicz czas trwania impulsu ECHO
+    // Sprawdzenie przepełnienia timera (choć przy 32-bitowym liczniku i krótkich czasach mało prawdopodobne)
+    if (echo_end_time_us < echo_start_time_us) {
+        return ULTRASONIC_OUT_OF_RANGE; // Lub inny kod błędu
+    }
+    echo_duration_us = echo_end_time_us - echo_start_time_us;
+
+    // POPRAWIONE FILTROWANIE I PRZELICZANIE
+
+    // Filtruj bardzo krótkie impulsy (prawdopodobnie szum)
+    if (echo_duration_us < 29) { // < 0.5cm - prawdopodobnie szum
+        return 9992; // Debug: prawdopodobnie szum
+    }
+
+    // Debug dla bardzo małych wartości (0.5cm - 2cm)
+    if (echo_duration_us < 116) { // 116µs = 2cm (116÷58=2)
+        return 5000 + echo_duration_us; // Debug: bardzo blisko - zwróć surowy czas
+    }
+
+    // Debug dla bardzo długich czasów
+    if (echo_duration_us > 50000) {
+        return 4000 + (echo_duration_us / 1000); // Debug: bardzo długi czas
+    }
+
+    // 6. Oblicz odległość w cm - ulepszone przeliczanie
+    // Użyj precyzyjniejszego wzoru: distance_cm = echo_duration_us / 58.3
+    // Dla liczb całkowitych: distance_cm = (echo_duration_us * 10) / 583
+    distance_cm = (echo_duration_us * 10) / 583;
+
+    // Jeśli wynik jest 0, użyj prostszego wzoru
+    if (distance_cm == 0) {
+        distance_cm = echo_duration_us / 58;
+    }
+
+    // 7. Sprawdzenie podstawowego zasięgu
+    if (distance_cm < 2) {
+        return 9993; // Debug: poniżej minimum (nie powinno się zdarzyć po filtrowaniu)
+    }
+
+    if (distance_cm > 400) { // Praktyczny górny limit HC-SR04
+        return ULTRASONIC_OUT_OF_RANGE;
+    }
+
+    return distance_cm;
+}

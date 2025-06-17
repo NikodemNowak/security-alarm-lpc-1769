@@ -1,0 +1,159 @@
+#include <lpc17xx.h>
+#include <stdio.h>
+#include "lpc17xx_pinsel.h"
+#include "lpc17xx_i2c.h"
+#include "lpc17xx_timer.h"
+
+#include "oled.h"
+#include "ocf_lpc176x_lib.h"
+
+#include <cr_section_macros.h>
+
+// HC-SR04 pins
+#define TRIG (1<<23) // P0.23
+#define ECHO (1<<24) // P0.24 (z dzielnikiem napięcia!)
+
+extern uint32_t SystemCoreClock;
+
+static void init_i2c(void) {
+    PINSEL_CFG_Type PinCfg;
+    PinCfg.Funcnum = 2;
+    PinCfg.Pinnum = 10;
+    PinCfg.Portnum = 0;
+    PINSEL_ConfigPin(&PinCfg);
+    PinCfg.Pinnum = 11;
+    PINSEL_ConfigPin(&PinCfg);
+    I2C_Init(LPC_I2C2, 100000);
+    I2C_Cmd(LPC_I2C2, ENABLE);
+}
+
+void initUltrasonic(void) {
+    PINSEL_CFG_Type PinCfg;
+
+    // Konfiguracja TRIG (P0.23) jako output
+    PinCfg.Funcnum = PINSEL_FUNC_0;
+    PinCfg.OpenDrain = PINSEL_PINMODE_NORMAL;
+    PinCfg.Pinmode = PINSEL_PINMODE_TRISTATE;
+    PinCfg.Portnum = 0;
+    PinCfg.Pinnum = 23;
+    PINSEL_ConfigPin(&PinCfg);
+
+    LPC_GPIO0->FIODIR |= TRIG;
+    LPC_GPIO0->FIOCLR |= TRIG;
+
+    // Konfiguracja ECHO (P0.24) jako input
+    PinCfg.Pinnum = 24;
+    PinCfg.Pinmode = PINSEL_PINMODE_PULLDOWN;
+    PINSEL_ConfigPin(&PinCfg);
+
+    LPC_GPIO0->FIODIR &= ~(ECHO);
+}
+
+float getUltrasonicDistance(void) {
+    uint32_t timeout = 0;
+    volatile uint32_t echo_counter = 0;
+
+    // Wyślij TRIG
+    LPC_GPIO0->FIOPIN |= TRIG;
+    for(volatile int i = 0; i < 1500; i++) __NOP(); // ~15µs
+    LPC_GPIO0->FIOCLR |= TRIG;
+    for(volatile int i = 0; i < 500; i++) __NOP();  // ~5µs
+
+    // Czekaj na ECHO start
+    timeout = 0;
+    while(!(LPC_GPIO0->FIOPIN & ECHO)) {
+        for(volatile int i = 0; i < 100; i++) __NOP();
+        timeout++;
+        if(timeout > 30000) return -1.0; // Timeout
+    }
+
+    // Licz czas ECHO
+    echo_counter = 0;
+    while(LPC_GPIO0->FIOPIN & ECHO) {
+        echo_counter++;
+        if(echo_counter > 500000) return -2.0; // Timeout
+    }
+
+    // Konwersja na centymetry (kalibracja empiryczna)
+    // echo_counter * współczynnik = cm
+    float distance_cm = (float)echo_counter / 100.0; // Współczynnik do dopasowania
+
+    return distance_cm;
+}
+
+void displayDistance(float distance, int count) {
+    char line1[25], line2[25], line3[25];
+
+    oled_clearScreen(OLED_COLOR_WHITE);
+
+    oled_putString(1, 1, (uint8_t*)"HC-SR04 SENSOR", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+
+    sprintf(line1, "Pomiar #%d", count);
+    oled_putString(1, 15, (uint8_t*)line1, OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+
+    if (distance < 0) {
+        oled_putString(1, 30, (uint8_t*)"BLAD SENSORA", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+        oled_putString(1, 45, (uint8_t*)"Sprawdz polaczenia", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    }
+    else if (distance < 2.0) {
+        oled_putString(1, 30, (uint8_t*)"ZA BLISKO!", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+        oled_putString(1, 45, (uint8_t*)"< 2 cm", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    }
+    else if (distance > 200.0) {
+        oled_putString(1, 30, (uint8_t*)"ZA DALEKO!", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+        oled_putString(1, 45, (uint8_t*)"> 200 cm", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    }
+    else {
+        sprintf(line2, "Odleglosc:");
+        oled_putString(1, 30, (uint8_t*)line2, OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+
+        sprintf(line3, "%.1f cm", distance);
+        oled_putString(1, 45, (uint8_t*)line3, OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    }
+}
+
+int main(void) {
+    float distance = 0.0;
+    int measurement_count = 0;
+
+    // Inicjalizacja
+    init_i2c();
+    oled_init();
+    initUART0();
+    initTimer0();
+    initUltrasonic();
+
+    // Ekran startowy
+    oled_clearScreen(OLED_COLOR_WHITE);
+    oled_putString(1, 1, (uint8_t*)"INICJALIZACJA...", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    Timer0_Wait(2000);
+
+    printf("HC-SR04 Sensor inicjalizowany\n");
+    printf("Zakres pomiaru: 2-200 cm\n");
+    printf("------------------------\n");
+
+    // Główna pętla
+    while(1) {
+        measurement_count++;
+        distance = getUltrasonicDistance();
+
+        // Wyświetl na OLED
+        displayDistance(distance, measurement_count);
+
+        // Logowanie na konsoli
+        if (distance < 0) {
+            printf("Pomiar #%d: BLAD SENSORA\n", measurement_count);
+        }
+        else if (distance < 2.0) {
+            printf("Pomiar #%d: ZA BLISKO (%.1f cm)\n", measurement_count, distance);
+        }
+        else if (distance > 200.0) {
+            printf("Pomiar #%d: ZA DALEKO (%.1f cm)\n", measurement_count, distance);
+        }
+        else {
+            printf("Pomiar #%d: %.1f cm\n", measurement_count, distance);
+        }
+
+        Timer0_Wait(10); // 1 sekunda między pomiarami
+    }
+}

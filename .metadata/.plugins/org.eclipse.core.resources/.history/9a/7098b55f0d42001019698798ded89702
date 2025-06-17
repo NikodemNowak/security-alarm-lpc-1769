@@ -1,0 +1,446 @@
+#include "lpc17xx_pinsel.h"
+#include "lpc17xx_i2c.h"
+#include "lpc17xx_gpio.h"
+#include "lpc17xx_timer.h"
+#include "lpc17xx_ssp.h"
+
+#include "light.h"
+#include "oled.h"
+#include "temp.h"
+#include "acc.h"
+#include "pca9532.h"
+#include "joystick.h"
+#include "rc522.h"
+
+#include "rgb.h"
+#include <cr_section_macros.h>
+#include <stdio.h>
+
+#define KONTAKTRON_PIN 10
+
+// HC-SR04 pins
+#define TRIG (1<<23) // P0.23
+#define ECHO (1<<24) // P0.24 (z dzielnikiem napięcia!)
+
+static uint8_t isArmed = 0;
+static uint8_t isAuthorized = 0;
+
+// Autoryzowany UID - Twój dzyndzel
+static uint8_t authorizedUID[4] = {0xAB, 0x13, 0xBA, 0x0C};
+
+// Zmienne dla czujnika odległości
+static float lastDistance = 0.0;
+static uint8_t motionDetected = 0;
+static uint32_t motionCooldown = 0;
+
+#define NOTE_PIN_HIGH() GPIO_SetValue(0, 1<<26);
+#define NOTE_PIN_LOW()  GPIO_ClearValue(0, 1<<26);
+
+volatile uint32_t tick = 0;
+
+void GPIO_init(void)
+{
+    LPC_PINCON->PINSEL4 &= ~(3 << 18);
+    LPC_GPIO2->FIODIR &= ~(1<<KONTAKTRON_PIN);
+    LPC_PINCON->PINMODE4 &= ~(3 << 18);
+}
+
+void initUltrasonic(void) {
+    PINSEL_CFG_Type PinCfg;
+
+    // Konfiguracja TRIG (P0.23) jako output
+    PinCfg.Funcnum = PINSEL_FUNC_0;
+    PinCfg.OpenDrain = PINSEL_PINMODE_NORMAL;
+    PinCfg.Pinmode = PINSEL_PINMODE_TRISTATE;
+    PinCfg.Portnum = 0;
+    PinCfg.Pinnum = 23;
+    PINSEL_ConfigPin(&PinCfg);
+
+    LPC_GPIO0->FIODIR |= TRIG;
+    LPC_GPIO0->FIOCLR |= TRIG;
+
+    // Konfiguracja ECHO (P0.24) jako input
+    PinCfg.Pinnum = 24;
+    PinCfg.Pinmode = PINSEL_PINMODE_PULLDOWN;
+    PINSEL_ConfigPin(&PinCfg);
+
+    LPC_GPIO0->FIODIR &= ~(ECHO);
+}
+
+float getUltrasonicDistance(void) {
+    uint32_t timeout = 0;
+    volatile uint32_t echo_counter = 0;
+
+    // Wyślij TRIG
+    LPC_GPIO0->FIOPIN |= TRIG;
+    for(volatile int i = 0; i < 1500; i++) __NOP(); // ~15µs
+    LPC_GPIO0->FIOCLR |= TRIG;
+    for(volatile int i = 0; i < 500; i++) __NOP();  // ~5µs
+
+    // Czekaj na ECHO start
+    timeout = 0;
+    while(!(LPC_GPIO0->FIOPIN & ECHO)) {
+        for(volatile int i = 0; i < 100; i++) __NOP();
+        timeout++;
+        if(timeout > 30000) return -1.0; // Timeout
+    }
+
+    // Licz czas ECHO
+    echo_counter = 0;
+    while(LPC_GPIO0->FIOPIN & ECHO) {
+        echo_counter++;
+        if(echo_counter > 500000) return -2.0; // Timeout
+    }
+
+    // Konwersja na centymetry
+    float distance_cm = (float)echo_counter / 100.0;
+
+    return distance_cm;
+}
+
+// Sprawdzenie czy wykryto ruch (zmiana odległości)
+uint8_t checkMotionDetection(void) {
+    float currentDistance = getUltrasonicDistance();
+
+    // Jeśli błąd pomiaru - ignoruj
+    if (currentDistance < 0) {
+        return 0;
+    }
+
+    // Jeśli poza zakresem - ignoruj
+    if (currentDistance < 5.0 || currentDistance > 150.0) {
+        return 0;
+    }
+
+    // Sprawdź czy jest znacząca zmiana odległości (>20cm)
+    if (lastDistance > 0) {
+        float change = (currentDistance > lastDistance) ?
+                      (currentDistance - lastDistance) :
+                      (lastDistance - currentDistance);
+
+        if (change > 20.0) {
+            lastDistance = currentDistance;
+            printf("Wykryto ruch! Zmiana: %.1f cm (%.1f -> %.1f)\n",
+                   change, lastDistance, currentDistance);
+            return 1; // Wykryto znaczący ruch
+        }
+    }
+
+    lastDistance = currentDistance;
+    return 0; // Brak ruchu
+}
+
+void initAlarm(void) {
+    GPIO_SetDir(0, 1<<26, 1); // Output dla głośnika
+}
+
+// POPRAWIONA FUNKCJA GŁOŚNIKA - używa Timer0_us_Wait jak w starym kodzie
+void playNote(uint32_t note, uint32_t durationMs) {
+    uint32_t t = 0;
+    if (note > 0) {
+        while (t < (durationMs * 1000)) {
+            NOTE_PIN_HIGH();
+            Timer0_us_Wait(note / 2);  // UŻYWAJ Timer0_us_Wait jak w starym kodzie
+            NOTE_PIN_LOW();
+            Timer0_us_Wait(note / 2);  // UŻYWAJ Timer0_us_Wait jak w starym kodzie
+            t += note;
+        }
+    } else {
+        Timer0_Wait(durationMs);
+    }
+}
+
+void runAlarm(void) {
+    uint32_t highNote = 1136; // 880 Hz
+    uint32_t lowNote  = 3816; // 262 Hz
+
+    // Alarm tylko gdy uzbrojony i nieupoważniony
+    if (isArmed && !isAuthorized) {
+        playNote(highNote, 200);
+        playNote(lowNote, 200);
+    }
+}
+
+static void init_ssp(void)
+{
+    SSP_CFG_Type SSP_ConfigStruct;
+    PINSEL_CFG_Type PinCfg;
+
+    // P0.7 - SCK
+    PinCfg.Funcnum = 2;
+    PinCfg.OpenDrain = 0;
+    PinCfg.Pinmode = 0;
+    PinCfg.Portnum = 0;
+    PinCfg.Pinnum = 7;
+    PINSEL_ConfigPin(&PinCfg);
+
+    // P0.8 - MISO
+    PinCfg.Pinnum = 8;
+    PINSEL_ConfigPin(&PinCfg);
+
+    // P0.9 - MOSI
+    PinCfg.Pinnum = 9;
+    PINSEL_ConfigPin(&PinCfg);
+
+    // P2.2 - CS
+    PinCfg.Funcnum = 0;
+    PinCfg.Portnum = 2;
+    PinCfg.Pinnum = 2;
+    PINSEL_ConfigPin(&PinCfg);
+
+    // P2.3 - RST
+    PinCfg.Pinnum = 3;
+    PINSEL_ConfigPin(&PinCfg);
+
+    SSP_ConfigStructInit(&SSP_ConfigStruct);
+    SSP_Init(LPC_SSP1, &SSP_ConfigStruct);
+    SSP_Cmd(LPC_SSP1, ENABLE);
+}
+
+static void init_i2c(void)
+{
+    PINSEL_CFG_Type PinCfg;
+    PinCfg.Funcnum = 2;
+    PinCfg.Pinnum = 10;
+    PinCfg.Portnum = 0;
+    PINSEL_ConfigPin(&PinCfg);
+    PinCfg.Pinnum = 11;
+    PINSEL_ConfigPin(&PinCfg);
+    I2C_Init(LPC_I2C2, 100000);
+    I2C_Cmd(LPC_I2C2, ENABLE);
+}
+
+// POPRAWIONA FUNKCJA moveBar - używa wartości jak w starym kodzie
+static void moveBar(uint16_t value)
+{
+    uint16_t ledOn = value;
+    pca9532_setLeds(ledOn, 0xffff);
+}
+
+// Sprawdza czy przyłożona karta jest autoryzowana
+uint8_t checkRFID(void) {
+    uint8_t status;
+    uint8_t str[MAX_LEN];
+    uint8_t serNum[5];
+
+    status = rc522_request(PICC_REQIDL, str);
+    if (status == 0) {
+        status = rc522_anticoll(serNum);
+        if (status == 0) {
+            // Sprawdź czy UID pasuje do autoryzowanego
+            uint8_t match = 1;
+            for (int i = 0; i < 4; i++) {
+                if (serNum[i] != authorizedUID[i]) {
+                    match = 0;
+                    break;
+                }
+            }
+            rc522_halt();
+            return match; // 1 = autoryzowana karta, 0 = nie
+        }
+    }
+    return 0; // Brak karty lub błąd
+}
+
+// Sygnały dźwiękowe
+void playConfirmationSound(void) {
+    playNote(1500, 100);
+    Timer0_Wait(50);
+    playNote(1000, 100);
+    Timer0_Wait(50);
+    playNote(750, 150);
+}
+
+void playArmSound(void) {
+    playNote(800, 200);
+    Timer0_Wait(100);
+    playNote(1200, 200);
+}
+
+void playDisarmSound(void) {
+    playNote(1200, 200);
+    Timer0_Wait(100);
+    playNote(800, 200);
+}
+
+// Obsługa joysticka
+static void handleJoystick(uint8_t joyState)
+{
+    if ((joyState & JOYSTICK_CENTER) != 0) {
+        if (isArmed > 0) {
+            // Wyłącz alarm
+            isArmed = 0;
+            isAuthorized = 0;
+            motionDetected = 0;
+            motionCooldown = 0;
+            playDisarmSound();
+
+            oled_clearScreen(OLED_COLOR_WHITE);
+            oled_putString(1,1, (uint8_t*)"SYSTEM ALARMOWY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+            oled_putString(1,9, (uint8_t*)"WYLACZONY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+            oled_putString(1,18, (uint8_t*)"BEZPIECZNY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+            oled_putString(1,27, (uint8_t*)"Czujnik: OFF", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+
+            moveBar(0);
+            rgb_setLeds(RGB_GREEN);
+
+        } else {
+            // Włącz alarm
+            isArmed = 1;
+            isAuthorized = 0;
+            motionDetected = 0;
+            motionCooldown = 0;
+            lastDistance = 0.0; // Reset baseline
+            playArmSound();
+
+            oled_clearScreen(OLED_COLOR_WHITE);
+            oled_putString(1,1, (uint8_t*)"ALARM AKTYWNY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+            oled_putString(1,9, (uint8_t*)"SKANUJ RFID", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+            oled_putString(1,18, (uint8_t*)"Czujnik: ON", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+
+            rgb_setLeds(RGB_RED);
+        }
+
+        Timer0_Wait(1500); // Pokaż komunikat przez 1.5s
+    }
+}
+
+uint8_t is_closed(void)
+{
+    return !(LPC_GPIO2->FIOPIN & (1 << KONTAKTRON_PIN));
+}
+
+int main (void) {
+    uint8_t state = 0;
+    uint8_t lastRFIDState = 0;
+    uint32_t authorizationTimer = 0;
+    uint32_t motionCheckTimer = 0;
+
+    GPIO_init();
+    init_i2c();
+    init_ssp();
+    oled_init();
+    rgb_init();
+    initAlarm();
+    initUltrasonic(); // Inicjalizacja czujnika odległości
+    rc522_init();
+
+    // Ekran startowy
+    oled_clearScreen(OLED_COLOR_WHITE);
+    oled_putString(1,1, (uint8_t*)"SYSTEM ALARMOWY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    oled_putString(1,9, (uint8_t*)"Z RFID + MOTION", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    oled_putString(1,18, (uint8_t*)"GOTOWY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    Timer0_Wait(2000);
+
+    moveBar(0);
+    rgb_setLeds(RGB_GREEN);
+
+    while(1) {
+        state = joystick_read();
+
+        // Obsługa joysticka
+        if (state != 0) {
+            handleJoystick(state);
+        }
+
+        // Sprawdzenie RFID gdy alarm aktywny
+        if (isArmed) {
+            uint8_t currentRFIDState = checkRFID();
+
+            if (currentRFIDState && !lastRFIDState) {
+                // Autoryzowana karta została przyłożona
+                isAuthorized = 1;
+                authorizationTimer = 100; // 10 sekund autoryzacji (100 * 100ms)
+                motionDetected = 0; // Wyczyść status ruchu
+                motionCooldown = 0;
+
+                playConfirmationSound();
+
+                oled_clearScreen(OLED_COLOR_WHITE);
+                oled_putString(1,1, (uint8_t*)"RFID", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+                oled_putString(1,9, (uint8_t*)"AUTORYZOWANY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+                oled_putString(1,18, (uint8_t*)"Dostep na 10s", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+
+                Timer0_Wait(2000); // Pokaż przez 2 sekundy
+            }
+
+            lastRFIDState = currentRFIDState;
+
+            // Odliczanie autoryzacji
+            if (isAuthorized && authorizationTimer > 0) {
+                authorizationTimer--;
+                if (authorizationTimer == 0) {
+                    isAuthorized = 0;
+                }
+            }
+
+            // Sprawdzanie czujnika ruchu co 2 sekundy gdy system uzbrojony
+            if (motionCheckTimer >= 20) { // 20 * 100ms = 2s
+                motionCheckTimer = 0;
+
+                if (checkMotionDetection()) {
+                    motionDetected = 1;
+                    motionCooldown = 30; // 3 sekundy cooldown (30 * 100ms)
+
+                    printf("ALARM: Wykryto ruch w strefie ochronnej!\n");
+                }
+            } else {
+                motionCheckTimer++;
+            }
+
+            // Odliczanie cooldown ruchu
+            if (motionCooldown > 0) {
+                motionCooldown--;
+                if (motionCooldown == 0) {
+                    motionDetected = 0;
+                }
+            }
+
+        } else {
+            // Gdy alarm wyłączony - wyczyść stany
+            isAuthorized = 0;
+            lastRFIDState = 0;
+            authorizationTimer = 0;
+            motionDetected = 0;
+            motionCooldown = 0;
+            motionCheckTimer = 0;
+        }
+
+        // Status drzwi na ekranie
+        if(is_closed()) {
+            oled_putString(1,27, (uint8_t*)"Drzwi: zamkn", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+        } else {
+            oled_putString(1,27, (uint8_t*)"Drzwi: otwarte", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+        }
+
+        // POPRAWIONA LOGIKA MIGANIA - jak w starym kodzie
+        if (isArmed != 0) {
+            if (isAuthorized) {
+                oled_putString(1,1, (uint8_t*)"ALARM AKTYWNY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+                oled_putString(1,9, (uint8_t*)"AUTORYZOWANY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+                moveBar(0); // Brak migania gdy autoryzowany
+            } else {
+                oled_putString(1,1, (uint8_t*)"ALARM AKTYWNY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+                oled_putString(1,9, (uint8_t*)"SKANUJ RFID", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+
+                // MIGANIE DIÓD - JAK W STARYM KODZIE
+                if (tick++ == 0) {
+                    moveBar(255);     // Pierwsze diody
+                } else if (tick >= 1) {
+                    tick = 0;
+                    moveBar(65280);   // Drugie diody
+                }
+            }
+        }
+
+        // Alarm dźwiękowy gdy:
+        // 1. Drzwi otwarte i brak autoryzacji
+        // 2. Wykryto ruch i brak autoryzacji
+        if (isArmed && !isAuthorized &&
+           (!is_closed() || (motionDetected && motionCooldown > 0))) {
+            runAlarm();
+        }
+
+        Timer0_Wait(100); // Główna pętla co 100ms
+    }
+}

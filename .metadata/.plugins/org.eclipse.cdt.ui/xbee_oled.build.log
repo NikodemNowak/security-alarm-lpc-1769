@@ -1,0 +1,25 @@
+13:03:30 **** Build of configuration Debug for project xbee_oled ****
+make -r -j16 all 
+Building file: ../src/cr_startup_lpc17.c
+Building file: ../src/main.c
+Invoking: MCU C Compiler
+arm-none-eabi-gcc -DDEBUG -D__USE_CMSIS=CMSISv1p30_LPC17xx -D__CODE_RED -D__NEWLIB__ -I"D:\E13_V5_okno\E13_alarm_V3\Lib_CMSISv1p30_LPC17xx\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_EaBaseBoard\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_MCU\inc" -O0 -g3 -gdwarf-4 -Wall -c -fmessage-length=0 -fno-builtin -ffunction-sections -fmerge-constants -fmacro-prefix-map="../src/"= -mcpu=cortex-m3 -mthumb -D__NEWLIB__ -fstack-usage -MMD -MP -MF"src/cr_startup_lpc17.d" -MT"src/cr_startup_lpc17.o" -MT"src/cr_startup_lpc17.d" -o "src/cr_startup_lpc17.o" "../src/cr_startup_lpc17.c"
+Invoking: MCU C Compiler
+arm-none-eabi-gcc -DDEBUG -D__USE_CMSIS=CMSISv1p30_LPC17xx -D__CODE_RED -D__NEWLIB__ -I"D:\E13_V5_okno\E13_alarm_V3\Lib_CMSISv1p30_LPC17xx\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_EaBaseBoard\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_MCU\inc" -O0 -g3 -gdwarf-4 -Wall -c -fmessage-length=0 -fno-builtin -ffunction-sections -fmerge-constants -fmacro-prefix-map="../src/"= -mcpu=cortex-m3 -mthumb -D__NEWLIB__ -fstack-usage -MMD -MP -MF"src/main.d" -MT"src/main.o" -MT"src/main.d" -o "src/main.o" "../src/main.c"
+Finished building: ../src/cr_startup_lpc17.c
+ 
+Finished building: ../src/main.c
+ 
+Building target: xbee_oled.axf
+Invoking: MCU Linker
+arm-none-eabi-gcc -nostdlib -L"D:\E13_V5_okno\E13_alarm_V3\Lib_CMSISv1p30_LPC17xx\Debug" -L"D:\E13_V5_okno\E13_alarm_V3\Lib_EaBaseBoard\Debug" -L"D:\E13_V5_okno\E13_alarm_V3\Lib_MCU\Debug" -Xlinker --gc-sections -Xlinker -Map=xbee_oled.map -mcpu=cortex-m3 -mthumb -T xbee_oled_Debug.ld -o "xbee_oled.axf" ./src/cr_startup_lpc17.o ./src/main.o    -lCMSISv1p30_LPC17xx -lLib_EaBaseBoard -lLib_MCU
+Finished building target: xbee_oled.axf
+ 
+Performing post-build steps
+arm-none-eabi-size xbee_oled.axf; # arm-none-eabi-objdump -h -S xbee_oled.axf >xbee_oled.lss
+   text	   data	    bss	    dec	    hex	filename
+  11148	      4	    768	  11920	   2e90	xbee_oled.axf
+ 
+
+13:03:34 Build Finished. 0 errors, 0 warnings. (took 3s.844ms)
+

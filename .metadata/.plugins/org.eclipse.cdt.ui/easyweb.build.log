@@ -1,0 +1,84 @@
+13:02:22 **** Build of configuration Debug for project easyweb ****
+make -r -j16 all 
+Building file: ../src/cr_startup_lpc17.c
+Building file: ../src/easyweb.c
+Invoking: MCU C Compiler
+arm-none-eabi-gcc -DDEBUG -D__USE_CMSIS=CMSISv1p30_LPC17xx -D__CODE_RED -D__NEWLIB__ -I"D:\E13_V5_okno\E13_alarm_V3\Lib_CMSISv1p30_LPC17xx\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_EaBaseBoard\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_MCU\inc" -O0 -g3 -gdwarf-4 -Wall -c -fmessage-length=0 -fno-builtin -ffunction-sections -fmerge-constants -fmacro-prefix-map="../src/"= -mcpu=cortex-m3 -mthumb -D__NEWLIB__ -fstack-usage -MMD -MP -MF"src/cr_startup_lpc17.d" -MT"src/cr_startup_lpc17.o" -MT"src/cr_startup_lpc17.d" -o "src/cr_startup_lpc17.o" "../src/cr_startup_lpc17.c"
+Invoking: MCU C Compiler
+arm-none-eabi-gcc -DDEBUG -D__USE_CMSIS=CMSISv1p30_LPC17xx -D__CODE_RED -D__NEWLIB__ -I"D:\E13_V5_okno\E13_alarm_V3\Lib_CMSISv1p30_LPC17xx\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_EaBaseBoard\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_MCU\inc" -O0 -g3 -gdwarf-4 -Wall -c -fmessage-length=0 -fno-builtin -ffunction-sections -fmerge-constants -fmacro-prefix-map="../src/"= -mcpu=cortex-m3 -mthumb -D__NEWLIB__ -fstack-usage -MMD -MP -MF"src/easyweb.d" -MT"src/easyweb.o" -MT"src/easyweb.d" -o "src/easyweb.o" "../src/easyweb.c"
+Building file: ../src/ethmac.c
+Building file: ../src/ew_systick.c
+Finished building: ../src/cr_startup_lpc17.c
+Invoking: MCU C Compiler
+Invoking: MCU C Compiler
+Finished building: ../src/easyweb.c
+arm-none-eabi-gcc -DDEBUG -D__USE_CMSIS=CMSISv1p30_LPC17xx -D__CODE_RED -D__NEWLIB__ -I"D:\E13_V5_okno\E13_alarm_V3\Lib_CMSISv1p30_LPC17xx\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_EaBaseBoard\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_MCU\inc" -O0 -g3 -gdwarf-4 -Wall -c -fmessage-length=0 -fno-builtin -ffunction-sections -fmerge-constants -fmacro-prefix-map="../src/"= -mcpu=cortex-m3 -mthumb -D__NEWLIB__ -fstack-usage -MMD -MP -MF"src/ethmac.d" -MT"src/ethmac.o" -MT"src/ethmac.d" -o "src/ethmac.o" "../src/ethmac.c"
+ 
+arm-none-eabi-gcc -DDEBUG -D__USE_CMSIS=CMSISv1p30_LPC17xx -D__CODE_RED -D__NEWLIB__ -I"D:\E13_V5_okno\E13_alarm_V3\Lib_CMSISv1p30_LPC17xx\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_EaBaseBoard\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_MCU\inc" -O0 -g3 -gdwarf-4 -Wall -c -fmessage-length=0 -fno-builtin -ffunction-sections -fmerge-constants -fmacro-prefix-map="../src/"= -mcpu=cortex-m3 -mthumb -D__NEWLIB__ -fstack-usage -MMD -MP -MF"src/ew_systick.d" -MT"src/ew_systick.o" -MT"src/ew_systick.d" -o "src/ew_systick.o" "../src/ew_systick.c"
+../src/ethmac.c: In function 'Init_EthMAC':
+../src/ethmac.c:111:12: warning: unused variable 'phy_linkstatus_mask' [-Wunused-variable]
+  111 |   unsigned phy_linkstatus_mask;
+      |            ^~~~~~~~~~~~~~~~~~~
+../src/ethmac.c:110:12: warning: unused variable 'phy_linkstatus_reg' [-Wunused-variable]
+  110 |   unsigned phy_linkstatus_reg;
+      |            ^~~~~~~~~~~~~~~~~~
+ 
+Building file: ../src/tcpip.c
+Finished building: ../src/ethmac.c
+Finished building: ../src/ew_systick.c
+Invoking: MCU C Compiler
+ 
+arm-none-eabi-gcc -DDEBUG -D__USE_CMSIS=CMSISv1p30_LPC17xx -D__CODE_RED -D__NEWLIB__ -I"D:\E13_V5_okno\E13_alarm_V3\Lib_CMSISv1p30_LPC17xx\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_EaBaseBoard\inc" -I"D:\E13_V5_okno\E13_alarm_V3\Lib_MCU\inc" -O0 -g3 -gdwarf-4 -Wall -c -fmessage-length=0 -fno-builtin -ffunction-sections -fmerge-constants -fmacro-prefix-map="../src/"= -mcpu=cortex-m3 -mthumb -D__NEWLIB__ -fstack-usage -MMD -MP -MF"src/tcpip.d" -MT"src/tcpip.o" -MT"src/tcpip.d" -o "src/tcpip.o" "../src/tcpip.c"
+ 
+../src/tcpip.c: In function 'TCPClose':
+../src/tcpip.c:103:3: warning: enumeration value 'CLOSED' not handled in switch [-Wswitch]
+  103 |   switch (TCPStateMachine)
+      |   ^~~~~~
+../src/tcpip.c:103:3: warning: enumeration value 'FIN_WAIT_1' not handled in switch [-Wswitch]
+../src/tcpip.c:103:3: warning: enumeration value 'FIN_WAIT_2' not handled in switch [-Wswitch]
+../src/tcpip.c:103:3: warning: enumeration value 'CLOSE_WAIT' not handled in switch [-Wswitch]
+../src/tcpip.c:103:3: warning: enumeration value 'CLOSING' not handled in switch [-Wswitch]
+../src/tcpip.c:103:3: warning: enumeration value 'LAST_ACK' not handled in switch [-Wswitch]
+../src/tcpip.c:103:3: warning: enumeration value 'TIME_WAIT' not handled in switch [-Wswitch]
+../src/tcpip.c: In function 'DoNetworkStuff':
+../src/tcpip.c:216:6: warning: suggest explicit braces to avoid ambiguous 'else' [-Wdangling-else]
+  216 |   if (TCPFlags & TCP_TIMER_RUNNING)
+      |      ^
+../src/tcpip.c:242:3: warning: enumeration value 'SYN_SENT' not handled in switch [-Wswitch]
+  242 |   switch (TCPStateMachine)
+      |   ^~~~~~
+../src/tcpip.c:242:3: warning: enumeration value 'FIN_WAIT_1' not handled in switch [-Wswitch]
+../src/tcpip.c:242:3: warning: enumeration value 'FIN_WAIT_2' not handled in switch [-Wswitch]
+../src/tcpip.c:242:3: warning: enumeration value 'CLOSING' not handled in switch [-Wswitch]
+../src/tcpip.c:242:3: warning: enumeration value 'LAST_ACK' not handled in switch [-Wswitch]
+../src/tcpip.c:242:3: warning: enumeration value 'TIME_WAIT' not handled in switch [-Wswitch]
+../src/tcpip.c: In function 'ProcessTCPFrame':
+../src/tcpip.c:633:9: warning: enumeration value 'CLOSED' not handled in switch [-Wswitch]
+  633 |         switch (TCPStateMachine)                 // change state if necessary
+      |         ^~~~~~
+../src/tcpip.c:633:9: warning: enumeration value 'LISTENING' not handled in switch [-Wswitch]
+../src/tcpip.c:633:9: warning: enumeration value 'SYN_SENT' not handled in switch [-Wswitch]
+../src/tcpip.c:633:9: warning: enumeration value 'ESTABLISHED' not handled in switch [-Wswitch]
+../src/tcpip.c:633:9: warning: enumeration value 'FIN_WAIT_2' not handled in switch [-Wswitch]
+../src/tcpip.c:633:9: warning: enumeration value 'CLOSE_WAIT' not handled in switch [-Wswitch]
+../src/tcpip.c:679:9: warning: enumeration value 'CLOSED' not handled in switch [-Wswitch]
+  679 |         switch (TCPStateMachine)
+      |         ^~~~~~
+../src/tcpip.c:679:9: warning: enumeration value 'LISTENING' not handled in switch [-Wswitch]
+../src/tcpip.c:679:9: warning: enumeration value 'SYN_SENT' not handled in switch [-Wswitch]
+../src/tcpip.c:679:9: warning: enumeration value 'CLOSE_WAIT' not handled in switch [-Wswitch]
+../src/tcpip.c:679:9: warning: enumeration value 'CLOSING' not handled in switch [-Wswitch]
+../src/tcpip.c:679:9: warning: enumeration value 'LAST_ACK' not handled in switch [-Wswitch]
+Finished building: ../src/tcpip.c
+ 
+Building target: easyweb.axf
+Invoking: MCU Linker
+arm-none-eabi-gcc -nostdlib -L"D:\E13_V5_okno\E13_alarm_V3\Lib_CMSISv1p30_LPC17xx\Debug" -L"D:\E13_V5_okno\E13_alarm_V3\Lib_EaBaseBoard\Debug" -L"D:\E13_V5_okno\E13_alarm_V3\Lib_MCU\Debug" -Xlinker --gc-sections -Xlinker -Map=easyweb.map -mcpu=cortex-m3 -mthumb -T easyweb_Debug.ld -o "easyweb.axf" ./src/cr_startup_lpc17.o ./src/easyweb.o ./src/ethmac.o ./src/ew_systick.o ./src/tcpip.o    -lCMSISv1p30_LPC17xx -lLib_EaBaseBoard -lLib_MCU
+C:/nxp/MCUXpressoIDE_24.12.148/ide/plugins/com.nxp.mcuxpresso.tools.win32_24.12.0.202407110909/tools/bin/../lib/gcc/arm-none-eabi/13.2.1/../../../../arm-none-eabi/bin/ld.exe: D:\E13_V5_okno\E13_alarm_V3\Lib_CMSISv1p30_LPC17xx\Debug\libCMSISv1p30_LPC17xx.a(system_LPC17xx.o):D:\E13_V5_okno\E13_alarm_V3\Lib_CMSISv1p30_LPC17xx\Debug/../src/system_LPC17xx.c:418: multiple definition of `SystemCoreClock'; ./src/easyweb.o:D:\E13_V5_okno\E13_alarm_V3\Lib_CMSISv1p30_LPC17xx\inc/system_LPC17xx.h:35: first defined here
+collect2.exe: error: ld returned 1 exit status
+make[1]: *** [makefile:44: easyweb.axf] Error 1
+make: *** [makefile:35: all] Error 2
+"make -r -j16 all" terminated with exit code 2. Build might be incomplete.
+
+13:02:28 Build Failed. 3 errors, 28 warnings. (took 5s.565ms)
+

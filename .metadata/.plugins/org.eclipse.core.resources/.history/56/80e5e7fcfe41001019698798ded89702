@@ -1,0 +1,32 @@
+#ifndef ULTRASONIC_H_
+#define ULTRASONIC_H_
+
+#include <stdint.h>
+
+// === Konfiguracja pinów ===
+// Upewnij się, że te piny są wolne na Twojej płytce!
+#define ULTRASONIC_TRIG_PORT 0
+#define ULTRASONIC_TRIG_PIN  23 // Np. P0.23
+
+#define ULTRASONIC_ECHO_PORT 0
+#define ULTRASONIC_ECHO_PIN  24 // Np. P0.24 (z dzielnikiem napięcia!)
+// =========================
+
+// Kody błędów/statusu dla get_distance_cm()
+#define ULTRASONIC_TIMEOUT_ECHO_START 9999 // Timeout oczekiwania na start echa
+#define ULTRASONIC_TIMEOUT_ECHO_PULSE 9998 // Timeout, echo za długie (poza zasięgiem)
+#define ULTRASONIC_OUT_OF_RANGE       9997 // Obliczona odległość poza efektywnym zasięgiem
+
+/**
+ * @brief Inicjalizuje piny GPIO dla czujnika HC-SR04 oraz Timer1 do pomiaru czasu.
+ */
+void ultrasonic_init(void);
+
+/**
+ * @brief Mierzy odległość za pomocą czujnika HC-SR04.
+ * @return Odległość w centymetrach lub kod błędu (ULTRASONIC_TIMEOUT_*, ULTRASONIC_OUT_OF_RANGE).
+ *         Typowy zasięg HC-SR04 to 2cm - 400cm.
+ */
+uint32_t ultrasonic_get_distance_cm(void);
+
+#endif /* ULTRASONIC_H_ */

@@ -1,0 +1,526 @@
+#include "lpc17xx_pinsel.h"
+#include "lpc17xx_i2c.h"
+#include "lpc17xx_gpio.h"
+#include "lpc17xx_timer.h"
+#include "lpc17xx_ssp.h"
+
+#include "light.h"
+#include "oled.h"
+#include "temp.h"
+#include "acc.h"
+#include "pca9532.h"
+#include "joystick.h"
+#include "rc522.h"
+#include "rgb.h"
+
+#include <cr_section_macros.h>
+#include <stdio.h>
+
+// --- Konfiguracja pinów i stałych ---
+#define KONTAKTRON_PIN 10 // P2.10
+
+// HC-SR04 pins
+#define HCSR04_TRIG_PORT 0
+#define HCSR04_TRIG_PIN  (1 << 23) // P0.23
+#define HCSR04_ECHO_PORT 0
+#define HCSR04_ECHO_PIN  (1 << 24) // P0.24 (z dzielnikiem napięcia!)
+
+// Piny wzmacniacza audio LM4811 i głośnika
+#define AUDIO_AMP_CLK_PORT     0
+#define AUDIO_AMP_CLK_PIN      (1 << 27)
+#define AUDIO_AMP_UPDN_PORT    0
+#define AUDIO_AMP_UPDN_PIN     (1 << 28)
+#define AUDIO_AMP_SHUTDN_PORT  2
+#define AUDIO_AMP_SHUTDN_PIN   (1 << 13)
+#define SPEAKER_OUT_PORT       0
+#define SPEAKER_OUT_PIN        (1 << 26)
+
+#define NOTE_PIN_HIGH() GPIO_SetValue(SPEAKER_OUT_PORT, SPEAKER_OUT_PIN)
+#define NOTE_PIN_LOW()  GPIO_ClearValue(SPEAKER_OUT_PORT, SPEAKER_OUT_PIN)
+
+// Autoryzowany UID karty RFID
+static uint8_t authorizedUID[4] = {0xAB, 0x13, 0xBA, 0x0C};
+
+// Parametry systemu
+#define MAIN_LOOP_DELAY_MS           100
+#define HCSR04_CALIBRATION_SAMPLES   30   // 30 * 100ms = 3s kalibracji
+#define HCSR04_MOTION_CHECK_INTERVAL_TICKS 10 // Sprawdzaj ruch co 10 * 100ms = 1s (po kalibracji)
+#define HCSR04_DISTANCE_CHANGE_THRESHOLD_CM 15.0f
+#define AUTHORIZATION_DURATION_TICKS (10000 / MAIN_LOOP_DELAY_MS) // 10 sekund
+#define MOTION_COOLDOWN_TICKS        (5000 / MAIN_LOOP_DELAY_MS)  // 5 sekund
+
+// Dzielnik dla HC-SR04 - MOŻE WYMAGAĆ KALIBRACJI dla Twojego konkretnego timingu pętli w getUltrasonicDistance!
+// Jeśli echo_counter zlicza cykle pętli, a nie bezpośrednio us, ta wartość musi być dostosowana.
+// Teoretycznie, dla czasu w us, dzielnik to 58.0. Jeśli pętla trwa ~0.58us, dzielnik 100.0 jest OK.
+#define HCSR04_ECHO_TO_CM_DIVISOR 100.0f
+
+// --- Zmienne globalne stanu systemu ---
+static uint8_t isArmed = 0;
+static uint8_t isAuthorized = 0;
+static uint8_t kontaktronClosed = 1; // Założenie początkowe lub odczyt przy starcie
+
+// Zmienne czujnika odległości
+static float baselineDistance = 0.0f;
+static uint8_t baselineSet = 0;
+static uint8_t motionDetectedFlag = 0; // Zmieniona nazwa z motionDetected dla uniknięcia kolizji
+static uint32_t motionCooldownTimer = 0;
+static uint32_t calibrationSampleCounter = 0;
+
+// Timery programowe
+static uint32_t motionCheckTimer = 0;
+static uint32_t authorizationTimer = 0;
+
+// Pomocnicza do migania LED
+static uint8_t blinkState = 0;
+
+// Bufor dla OLED
+static char oled_line_buf[24];
+
+// --- Deklaracje funkcji ---
+static void init_all_gpio(void);
+static void init_ultrasonic_sensor(void);
+static float get_ultrasonic_distance(void);
+static uint8_t check_motion_detection(void);
+static void init_audio_alarm(void);
+static void play_note(uint32_t period_us, uint32_t duration_ms);
+static void run_audio_alarm(void);
+static void init_ssp1_for_rc522(void);
+static void init_i2c2_for_oled_and_pca(void);
+static void update_led_bar(uint16_t pattern);
+static uint8_t check_rfid_card(void);
+static void play_sound_confirmation(void);
+static void play_sound_arm(void);
+static void play_sound_disarm(void);
+static void handle_joystick_input(uint8_t joy_state);
+static uint8_t is_kontaktron_closed(void);
+static void update_oled_display(void);
+
+// --- Implementacje funkcji ---
+
+void init_all_gpio(void) {
+    // Kontaktron P2.10 jako wejście z pull-up (lub pull-down, zależy od logiki)
+    PINSEL_CFG_Type PinCfg;
+    PinCfg.Funcnum = PINSEL_FUNC_0;
+    PinCfg.Portnum = 2;
+    PinCfg.Pinnum = KONTAKTRON_PIN;
+    PinCfg.Pinmode = PINSEL_PINMODE_PULLUP; // Zakładamy, że kontaktron zwiera do masy gdy zamknięty
+    PinCfg.OpenDrain = PINSEL_PINMODE_NORMAL;
+    PINSEL_ConfigPin(&PinCfg);
+    GPIO_SetDir(2, (1 << KONTAKTRON_PIN), 0); // Wejście
+}
+
+void init_ultrasonic_sensor(void) {
+    PINSEL_CFG_Type PinCfg;
+
+    PinCfg.Funcnum = PINSEL_FUNC_0;
+    PinCfg.OpenDrain = PINSEL_PINMODE_NORMAL;
+    PinCfg.Portnum = HCSR04_TRIG_PORT;
+    PinCfg.Pinnum = 23; // P0.23
+    PinCfg.Pinmode = PINSEL_PINMODE_TRISTATE; // Standard dla GPIO out
+    PINSEL_ConfigPin(&PinCfg);
+    GPIO_SetDir(HCSR04_TRIG_PORT, HCSR04_TRIG_PIN, 1); // TRIG jako wyjście
+    GPIO_ClearValue(HCSR04_TRIG_PORT, HCSR04_TRIG_PIN); // TRIG low
+
+    PinCfg.Portnum = HCSR04_ECHO_PORT;
+    PinCfg.Pinnum = 24; // P0.24
+    PinCfg.Pinmode = PINSEL_PINMODE_PULLDOWN; // ECHO jako wejście z pull-down
+    PINSEL_ConfigPin(&PinCfg);
+    GPIO_SetDir(HCSR04_ECHO_PORT, HCSR04_ECHO_PIN, 0); // ECHO jako wejście
+}
+
+float get_ultrasonic_distance(void) {
+    volatile uint32_t echo_pulse_duration_cycles = 0;
+    uint32_t timeout_counter;
+
+    GPIO_SetValue(HCSR04_TRIG_PORT, HCSR04_TRIG_PIN);
+    Timer0_us_Wait(15); // Impuls TRIG 15us
+    GPIO_ClearValue(HCSR04_TRIG_PORT, HCSR04_TRIG_PIN);
+
+    timeout_counter = 0;
+    while (!(GPIO_ReadValue(HCSR04_ECHO_PORT) & HCSR04_ECHO_PIN)) { // Czekaj na start echa
+        Timer0_us_Wait(1); // Małe opóźnienie by nie zapętlić się zbyt szybko
+        timeout_counter++;
+        if (timeout_counter > 30000) return -1.0f; // Timeout ~30ms
+    }
+
+    echo_pulse_duration_cycles = 0;
+    while (GPIO_ReadValue(HCSR04_ECHO_PORT) & HCSR04_ECHO_PIN) { // Mierz czas trwania echa
+        echo_pulse_duration_cycles++;
+        // Ta pętla jest krytyczna dla dokładności. Timer0_us_Wait(1) może tu pomóc w kalibracji
+        // ale dla większej precyzji lepiej użyć sprzętowego timera z input capture.
+        // Aktualny timeout zakłada, że pętla wykonuje się dość szybko.
+        if (echo_pulse_duration_cycles > 80000) return -2.0f; // Timeout ~40-50ms (poza zasięgiem)
+    }
+
+    // Konwersja na cm - HCSR04_ECHO_TO_CM_DIVISOR może wymagać kalibracji!
+    return (float)echo_pulse_duration_cycles / HCSR04_ECHO_TO_CM_DIVISOR;
+}
+
+uint8_t check_motion_detection(void) {
+    float currentDistance = get_ultrasonic_distance();
+
+    if (currentDistance < 0) { // Błąd pomiaru
+        // printf("HCSR04 Error: %.1f\n", currentDistance);
+        return 0;
+    }
+    // Pomijaj pomiary poza realistycznym zakresem (np. 2cm - 400cm)
+    if (currentDistance < 2.0f || currentDistance > 400.0f) {
+        // printf("HCSR04 Out of range: %.1f cm\n", currentDistance);
+        return 0;
+    }
+
+    if (!baselineSet) {
+        if (calibrationSampleCounter < HCSR04_CALIBRATION_SAMPLES) {
+            calibrationSampleCounter++;
+            baselineDistance = currentDistance; // Uśrednianie byłoby lepsze, ale to prostsze
+            // printf("Calib: %.1f cm (%lu/%d)\n", baselineDistance, calibrationSampleCounter, HCSR04_CALIBRATION_SAMPLES);
+        } else {
+            baselineSet = 1;
+            // printf("Baseline set: %.1f cm\n", baselineDistance);
+        }
+        return 0; // Brak alarmu podczas kalibracji
+    }
+
+    float change = (currentDistance > baselineDistance) ?
+                   (currentDistance - baselineDistance) :
+                   (baselineDistance - currentDistance);
+
+    if (change > HCSR04_DISTANCE_CHANGE_THRESHOLD_CM) {
+        // printf("MOTION! Base: %.1f, Curr: %.1f, Chg: %.1f\n", baselineDistance, currentDistance, change);
+        return 1; // Wykryto ruch
+    }
+    return 0; // Brak ruchu
+}
+
+void init_audio_alarm(void) {
+    GPIO_SetDir(AUDIO_AMP_CLK_PORT, AUDIO_AMP_CLK_PIN, 1);
+    GPIO_SetDir(AUDIO_AMP_UPDN_PORT, AUDIO_AMP_UPDN_PIN, 1);
+    GPIO_SetDir(AUDIO_AMP_SHUTDN_PORT, AUDIO_AMP_SHUTDN_PIN, 1);
+    GPIO_SetDir(SPEAKER_OUT_PORT, SPEAKER_OUT_PIN, 1);
+
+    GPIO_ClearValue(AUDIO_AMP_CLK_PORT, AUDIO_AMP_CLK_PIN);
+    GPIO_ClearValue(AUDIO_AMP_UPDN_PORT, AUDIO_AMP_UPDN_PIN);
+    GPIO_ClearValue(AUDIO_AMP_SHUTDN_PORT, AUDIO_AMP_SHUTDN_PIN); // Włącz wzmacniacz
+    NOTE_PIN_LOW();
+}
+
+void play_note(uint32_t period_us, uint32_t duration_ms) {
+    uint32_t t_elapsed_us = 0;
+    uint32_t duration_us = duration_ms * 1000;
+
+    if (period_us == 0) { // Cisza
+        Timer0_Wait(duration_ms);
+        return;
+    }
+
+    while (t_elapsed_us < duration_us) {
+        NOTE_PIN_HIGH();
+        Timer0_us_Wait(period_us / 2);
+        NOTE_PIN_LOW();
+        Timer0_us_Wait(period_us / 2);
+        t_elapsed_us += period_us;
+    }
+}
+
+void run_audio_alarm(void) {
+    // Dźwięk alarmu - naprzemiennie wysoki i niski ton
+    play_note(1136, 150); // ~880 Hz
+    play_note(2272, 150); // ~440 Hz
+}
+
+void init_ssp1_for_rc522(void) {
+    SSP_CFG_Type SSP_ConfigStruct;
+    PINSEL_CFG_Type PinCfg;
+
+    PinCfg.Funcnum = PINSEL_FUNC_2; PinCfg.OpenDrain = 0; PinCfg.Pinmode = 0;
+    PinCfg.Portnum = 0; PinCfg.Pinnum = 7; PINSEL_ConfigPin(&PinCfg); // SCK1 (P0.7)
+    PinCfg.Pinnum = 8; PINSEL_ConfigPin(&PinCfg); // MISO1 (P0.8)
+    PinCfg.Pinnum = 9; PINSEL_ConfigPin(&PinCfg); // MOSI1 (P0.9)
+
+    PinCfg.Funcnum = PINSEL_FUNC_0; // GPIO dla CS i RST
+    PinCfg.Portnum = 2; PinCfg.Pinnum = 2; PINSEL_ConfigPin(&PinCfg); // CS (P2.2)
+    PinCfg.Portnum = 0; PinCfg.Pinnum = 6; PINSEL_ConfigPin(&PinCfg); // RST (P0.6) - ZMIANA z P2.3 na P0.6 (jeśli tak jest w rc522.h)
+                                                                    // Upewnij się, że to jest zgodne z rc522_init()!
+                                                                    // Oryginał miał P2.3, ale rc522.c często używa P0.6. Sprawdź swoją bibliotekę rc522.
+                                                                    // Jeśli używasz oryginalnego P2.3:
+                                                                    // PinCfg.Portnum = 2; PinCfg.Pinnum = 3; PINSEL_ConfigPin(&PinCfg); // RST (P2.3)
+
+
+    SSP_ConfigStructInit(&SSP_ConfigStruct);
+    SSP_Init(LPC_SSP1, &SSP_ConfigStruct);
+    SSP_Cmd(LPC_SSP1, ENABLE);
+}
+
+void init_i2c2_for_oled_and_pca(void) {
+    PINSEL_CFG_Type PinCfg;
+    PinCfg.Funcnum = PINSEL_FUNC_2; // I2C2
+    PinCfg.Pinmode = PINSEL_PINMODE_PULLUP; // Zewnętrzne pull-upy są zalecane, ale wewnętrzne mogą działać
+    PinCfg.OpenDrain = PINSEL_PINMODE_OPENDRAIN; // Standard dla I2C
+    PinCfg.Portnum = 0; PinCfg.Pinnum = 10; PINSEL_ConfigPin(&PinCfg); // SDA2 (P0.10)
+    PinCfg.Pinnum = 11; PINSEL_ConfigPin(&PinCfg); // SCL2 (P0.11)
+
+    I2C_Init(LPC_I2C2, 100000); // 100kHz
+    I2C_Cmd(LPC_I2C2, ENABLE);
+}
+
+void update_led_bar(uint16_t pattern) {
+    pca9532_setLeds(pattern, 0xFFFF); // Załóżmy, że 0xFFFF to maska dla wszystkich LED
+}
+
+uint8_t check_rfid_card(void) {
+    uint8_t status;
+    uint8_t uid_buffer[MAX_LEN]; // MAX_LEN zdefiniowane w rc522.h
+    uint8_t serNum[5]; // RC522 zwraca 4 bajty UID + 1 bajt BCC
+
+    status = rc522_request(PICC_REQIDL, uid_buffer);
+    if (status == MI_OK) {
+        status = rc522_anticoll(serNum);
+        if (status == MI_OK) {
+            uint8_t match = 1;
+            for (int i = 0; i < 4; i++) {
+                if (serNum[i] != authorizedUID[i]) {
+                    match = 0;
+                    break;
+                }
+            }
+            rc522_halt(); // Ważne, aby zwolnić kartę
+            return match;
+        }
+    }
+    return 0; // Brak karty, błąd lub nieautoryzowana
+}
+
+void play_sound_confirmation(void) {
+    play_note(1500, 80); play_note(0, 50);
+    play_note(1000, 80); play_note(0, 50);
+    play_note(750, 120);
+}
+
+void play_sound_arm(void) {
+    play_note(800, 150); play_note(0, 80);
+    play_note(1200, 150);
+}
+
+void play_sound_disarm(void) {
+    play_note(1200, 150); play_note(0, 80);
+    play_note(800, 150);
+}
+
+void handle_joystick_input(uint8_t joy_state) {
+    if ((joy_state & JOYSTICK_CENTER) != 0) {
+        if (isArmed) { // Rozbrój system
+            isArmed = 0;
+            isAuthorized = 0;
+            motionDetectedFlag = 0;
+            motionCooldownTimer = 0;
+            baselineSet = 0;
+            calibrationSampleCounter = 0;
+            baselineDistance = 0.0f;
+            authorizationTimer = 0;
+            motionCheckTimer = 0;
+            play_sound_disarm();
+        } else { // Uzbrój system
+            isArmed = 1;
+            isAuthorized = 0; // Autoryzacja jest resetowana przy uzbrajaniu
+            motionDetectedFlag = 0;
+            motionCooldownTimer = 0;
+            baselineSet = 0; // Rozpocznij kalibrację
+            calibrationSampleCounter = 0;
+            baselineDistance = 0.0f;
+            authorizationTimer = 0;
+            motionCheckTimer = 0; // Resetuj timer sprawdzania ruchu
+            play_sound_arm();
+        }
+        update_oled_display(); // Zaktualizuj OLED od razu po zmianie stanu
+        Timer0_Wait(500); // Debounce/zapobieganie wielokrotnym akcjom
+    }
+}
+
+uint8_t is_kontaktron_closed(void) {
+    // Zakładając PULLUP i zwarcie do GND gdy zamknięty:
+    // Odczyt 0 oznacza zamknięty.
+    return !(GPIO_ReadValue(2) & (1 << KONTAKTRON_PIN));
+}
+
+void update_oled_display(void) {
+    oled_clearScreen(OLED_COLOR_WHITE);
+    oled_putString(1, 1, (uint8_t*)"SYSTEM ALARMOWY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+
+    if (!isArmed) {
+        oled_putString(1, 10, (uint8_t*)"Status: WYLACZONY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+        oled_putString(1, 19, (uint8_t*)"Stan: BEZPIECZNY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    } else { // isArmed == 1
+        if (isAuthorized) {
+            oled_putString(1, 10, (uint8_t*)"Status: AUTORYZACJA", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+            sprintf(oled_line_buf, "Czas: %lus", authorizationTimer * MAIN_LOOP_DELAY_MS / 1000);
+            oled_putString(1, 19, (uint8_t*)oled_line_buf, OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+        } else if (!baselineSet) {
+            oled_putString(1, 10, (uint8_t*)"Status: KALIBRACJA", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+            sprintf(oled_line_buf, "Postep: %lu/%d", calibrationSampleCounter, HCSR04_CALIBRATION_SAMPLES);
+            oled_putString(1, 19, (uint8_t*)oled_line_buf, OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+            oled_putString(1, 28, (uint8_t*)"Nie ruszaj sie!", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+        } else { // Uzbrojony, nieautoryzowany, po kalibracji
+            oled_putString(1, 10, (uint8_t*)"Status: UZBROJONY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+            if (motionDetectedFlag && motionCooldownTimer > 0) {
+                oled_putString(1, 19, (uint8_t*)"ALARM: RUCH!", OLED_COLOR_RED, OLED_COLOR_WHITE);
+            } else if (!kontaktronClosed) {
+                oled_putString(1, 19, (uint8_t*)"ALARM: DRZWI!", OLED_COLOR_RED, OLED_COLOR_WHITE);
+            } else {
+                oled_putString(1, 19, (uint8_t*)"Stan: MONITORUJE", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+            }
+            sprintf(oled_line_buf, "Baseline: %.1fcm", baselineDistance);
+            oled_putString(1, 28, (uint8_t*)oled_line_buf, OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+        }
+    }
+
+    // Zawsze wyświetlaj status drzwi
+    if (kontaktronClosed) {
+        oled_putString(1, 37, (uint8_t*)"Drzwi: Zamkniete", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    } else {
+        oled_putString(1, 37, (uint8_t*)"Drzwi: Otwarte", OLED_COLOR_RED, OLED_COLOR_WHITE);
+    }
+}
+
+
+int main (void) {
+    uint8_t joystickState = 0;
+    uint8_t rfid_detected_this_cycle = 0;
+    uint8_t prev_kontaktron_state = 1;
+    uint8_t oled_update_needed = 1; // Flaga do aktualizacji OLED
+
+    // --- Inicjalizacje ---
+    init_all_gpio();
+    init_i2c2_for_oled_and_pca();
+    init_ssp1_for_rc522(); // Upewnij się, że piny CS/RST są zgodne z rc522.c
+
+    timer_init(); // Załóżmy, że ta funkcja istnieje i konfiguruje Timer0 dla Timer0_Wait i Timer0_us_Wait
+                  // Jeśli nie, musisz dodać odpowiednią inicjalizację LPC_TIM0
+
+    oled_init();
+    rgb_init();
+    pca9532_init(); // Załóżmy, że to ustawia LEDy na PCA jako wyjścia
+    init_audio_alarm();
+    init_ultrasonic_sensor();
+    rc522_init(); // Inicjalizacja RC522 (piny CS, RST)
+    joystick_init(); // Inicjalizacja joysticka
+
+    kontaktronClosed = is_kontaktron_closed(); // Odczytaj stan początkowy
+    prev_kontaktron_state = kontaktronClosed;
+
+    oled_clearScreen(OLED_COLOR_WHITE);
+    oled_putString(1,1, (uint8_t*)"SYSTEM ALARMOWY", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    oled_putString(1,10, (uint8_t*)"Inicjalizacja...", OLED_COLOR_BLACK, OLED_COLOR_WHITE);
+    Timer0_Wait(1500);
+    update_oled_display(); // Pokaż początkowy stan "Wyłączony"
+
+    while(1) {
+        oled_update_needed = 0; // Resetuj flagę na początku pętli
+
+        // --- Odczyt wejść ---
+        joystickState = joystick_read();
+        if (joystickState != 0) {
+            handle_joystick_input(joystickState);
+            oled_update_needed = 1; // Stan się zmienił
+        }
+
+        uint8_t current_kontaktron_state = is_kontaktron_closed();
+        if (current_kontaktron_state != prev_kontaktron_state) {
+            kontaktronClosed = current_kontaktron_state;
+            prev_kontaktron_state = current_kontaktron_state;
+            oled_update_needed = 1;
+            // printf("Kontaktron: %s\n", kontaktronClosed ? "Zamkniety" : "Otwarty");
+        }
+
+
+        // --- Logika systemu ---
+        if (isArmed) {
+            rgb_setLeds(RGB_YELLOW); // Domyślnie żółty gdy uzbrojony, potem zmieniany
+
+            if (isAuthorized) {
+                rgb_setLeds(RGB_BLUE); // Niebieski podczas autoryzacji
+                if (authorizationTimer > 0) {
+                    authorizationTimer--;
+                    if (authorizationTimer == 0) {
+                        isAuthorized = 0;
+                        // printf("Autoryzacja wygasla.\n");
+                        oled_update_needed = 1;
+                    }
+                }
+            } else { // Nieautoryzowany
+                // Sprawdzenie RFID tylko jeśli nieautoryzowany
+                rfid_detected_this_cycle = check_rfid_card();
+                if (rfid_detected_this_cycle) {
+                    isAuthorized = 1;
+                    authorizationTimer = AUTHORIZATION_DURATION_TICKS;
+                    motionDetectedFlag = 0; // Wyczyść flagę ruchu po autoryzacji
+                    motionCooldownTimer = 0;
+                    play_sound_confirmation();
+                    // printf("RFID Autoryzowany.\n");
+                    oled_update_needed = 1;
+                }
+
+                // Kalibracja lub detekcja ruchu (tylko jeśli nieautoryzowany)
+                if (!baselineSet) {
+                    rgb_setLeds(RGB_ORANGE); // Pomarańczowy podczas kalibracji
+                    uint8_t prev_calib_counter = calibrationSampleCounter;
+                    check_motion_detection(); // Wywołuj w każdej pętli podczas kalibracji
+                    if (calibrationSampleCounter != prev_calib_counter || (baselineSet && prev_calib_counter == HCSR04_CALIBRATION_SAMPLES-1) ) {
+                        oled_update_needed = 1; // Aktualizuj OLED jeśli licznik się zmienił lub kalibracja się zakończyła
+                    }
+                } else { // baselineSet == 1 (po kalibracji)
+                    if (motionCheckTimer >= (HCSR04_MOTION_CHECK_INTERVAL_TICKS -1) ) {
+                        motionCheckTimer = 0;
+                        if (check_motion_detection()) {
+                            if (!motionDetectedFlag) { // Wykryto nowy ruch
+                                motionDetectedFlag = 1;
+                                oled_update_needed = 1;
+                            }
+                            motionCooldownTimer = MOTION_COOLDOWN_TICKS; // Resetuj cooldown przy każdym wykryciu
+                            // printf("ALARM: Ruch!\n");
+                        }
+                    } else {
+                        motionCheckTimer++;
+                    }
+                }
+            }
+
+            // Cooldown ruchu
+            if (motionCooldownTimer > 0) {
+                motionCooldownTimer--;
+                if (motionCooldownTimer == 0) {
+                    if (motionDetectedFlag) { // Jeśli flaga była ustawiona, teraz ją czyścimy
+                         motionDetectedFlag = 0;
+                         oled_update_needed = 1;
+                    }
+                    // printf("Cooldown ruchu zakonczony.\n");
+                }
+            }
+
+            // Logika alarmu
+            if (!isAuthorized && baselineSet && (!kontaktronClosed || (motionDetectedFlag && motionCooldownTimer > 0))) {
+                rgb_setLeds(RGB_RED); // Czerwony alarm
+                run_audio_alarm();    // Dźwięk alarmu (blokujący na czas trwania)
+
+                blinkState = !blinkState; // Migotanie LED bar
+                update_led_bar(blinkState ? 0xFFFF : 0x0000);
+            } else if (!isAuthorized && baselineSet) { // Uzbrojony, spokojny
+                 rgb_setLeds(RGB_GREEN);
+                 update_led_bar(0x0000); // Wyłącz LED bar
+            }
+
+
+        } else { // System nieuzbrojony
+            rgb_setLeds(RGB_GREEN); // Zielony - bezpieczny
+            update_led_bar(0x0000); // Wyłącz LED bar
+            // Wszystkie flagi i timery są resetowane w handle_joystick_input przy rozbrajaniu
+        }
+
+        // --- Aktualizacja wyświetlacza (tylko gdy potrzeba) ---
+        if(oled_update_needed) {
+            update_oled_display();
+        }
+
+        Timer0_Wait(MAIN_LOOP_DELAY_MS);
+    }
+    return 0; // Teoretycznie nigdy nie osiągnięte
+}

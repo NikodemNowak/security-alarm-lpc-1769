@@ -1,0 +1,106 @@
+#include <lpc17xx.h>
+#include "ocf_lpc176x_lib.h"
+#include <stdio.h>
+
+extern uint32_t SystemCoreClock; // Dostępne po #include <lpc17xx.h>
+
+//Retarget printf()
+struct __FILE
+{
+  int dummyVar;
+};
+
+FILE __stdout;
+FILE __stdin;
+
+int fputc(int c, FILE * stream)
+{
+	U0Write(c);
+	return c;
+}
+
+int fgetc(FILE * stream)
+{
+	char c = U0Read();
+	U0Write(c);
+	return c;
+}
+
+void initUART0(void)
+{
+	LPC_PINCON->PINSEL0 |= (1<<4) | (1<<6);
+	LPC_UART0->LCR = 3 | DLAB_BIT;
+	LPC_UART0->DLL = 12;
+	LPC_UART0->DLM = 0;
+	LPC_UART0->FCR |= Ux_FIFO_EN | Rx_FIFO_RST | Tx_FIFO_RST;
+	LPC_UART0->FDR = (MULVAL<<4) | DIVADDVAL;
+	LPC_UART0->LCR &= ~(DLAB_BIT);
+}
+
+void initTimer0(void)
+{
+	// POPRAWKA: Dynamiczne obliczanie PCLK dla Timer0
+	uint32_t pclk_timer0;
+
+	// Sprawdź ustawienia PCLKSEL0 dla Timer0 (bity 3:2)
+	uint32_t pclksel = (LPC_SC->PCLKSEL0 >> 2) & 0x3;
+
+	switch(pclksel) {
+		case 0: pclk_timer0 = SystemCoreClock / 4; break;  // PCLK = CCLK/4
+		case 1: pclk_timer0 = SystemCoreClock;     break;  // PCLK = CCLK
+		case 2: pclk_timer0 = SystemCoreClock / 2; break;  // PCLK = CCLK/2
+		case 3: pclk_timer0 = SystemCoreClock / 8; break;  // PCLK = CCLK/8
+		default: pclk_timer0 = SystemCoreClock / 4; break;
+	}
+
+	LPC_TIM0->CTCR = 0x0;
+	// POPRAWKA: Ustaw prescaler dla rozdzielczości 1µs
+	LPC_TIM0->PR = (pclk_timer0 / 1000000) - 1; // TC będzie liczył w µs
+	LPC_TIM0->TCR = 0x02; // Reset Timer
+}
+
+void startTimer0(void)
+{
+	LPC_TIM0->TCR = 0x02; // Reset Timer
+	LPC_TIM0->TCR = 0x01; // Enable timer
+}
+
+unsigned int stopTimer0(void)
+{
+	LPC_TIM0->TCR = 0x00; // Disable timer
+	return LPC_TIM0->TC;
+}
+
+void delayUS(unsigned int microseconds)
+{
+	LPC_TIM0->TCR = 0x02; // Reset Timer
+	LPC_TIM0->TCR = 0x01; // Enable timer
+	while(LPC_TIM0->TC < microseconds); // TC teraz liczy w µs
+	LPC_TIM0->TCR = 0x00; // Disable timer
+}
+
+void delayMS(unsigned int milliseconds)
+{
+	delayUS(milliseconds * 1000);
+}
+
+void U0Write(char cChar)
+{
+	 while ( !(LPC_UART0->LSR & THRE) );
+	 if( cChar == '\n' )
+	 {
+			LPC_UART0->THR = CARRIAGE_RETURN;
+			while( !(LPC_UART0->LSR & THRE ));
+			LPC_UART0->THR = LINE_FEED;
+	 }
+	 else
+	 {
+			 LPC_UART0->THR = cChar;
+	 }
+}
+
+char U0Read(void)
+{
+	 while( !(LPC_UART0->LSR & RDR ));
+   return LPC_UART0->RBR;
+}

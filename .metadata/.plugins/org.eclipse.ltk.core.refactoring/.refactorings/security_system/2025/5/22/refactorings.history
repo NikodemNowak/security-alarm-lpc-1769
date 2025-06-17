@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session version="1.0">
+<refactoring comment="Rename resource &apos;security_system/src/main_rfid_test&apos; to &apos;main_rfid_test.c&apos;" description="Rename resource &apos;main_rfid_test&apos;" flags="7" id="org.eclipse.ltk.core.refactoring.rename.resource" input="src/main_rfid_test" name="main_rfid_test.c" stamp="1748518105547" updateReferences="true"/>
+</session>

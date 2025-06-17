@@ -1,0 +1,11 @@
+16:35:19 **** Incremental Build of configuration Debug for project demo ****
+make -r -j16 all 
+make[1]: Nothing to be done for 'main-build'.
+Performing post-build steps
+arm-none-eabi-size demo.axf; # arm-none-eabi-objdump -h -S demo.axf >demo.lss
+   text	   data	    bss	    dec	    hex	filename
+  13020	    152	    836	  14008	   36b8	demo.axf
+ 
+
+16:35:20 Build Finished. 0 errors, 0 warnings. (took 150ms)
+

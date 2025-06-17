@@ -1,0 +1,14 @@
+../src/rc522.c:32:6:rc522_write	40	static
+../src/rc522.c:51:9:rc522_read	48	static
+../src/rc522.c:72:6:rc522_setBitMask	16	static
+../src/rc522.c:78:6:rc522_clearBitMask	16	static
+../src/rc522.c:84:6:rc522_antennaOn	8	static
+../src/rc522.c:92:6:rc522_antennaOff	0	static
+../src/rc522.c:96:6:rc522_reset	0	static
+../src/rc522.c:9:6:rc522_init	8	static
+../src/rc522.c:116:9:rc522_toCard	32	static
+../src/rc522.c:100:9:rc522_request	32	static
+../src/rc522.c:199:9:rc522_anticoll	24	static
+../src/rc522.c:247:6:rc522_calculateCRC	16	static
+../src/rc522.c:224:9:rc522_selectTag	32	static
+../src/rc522.c:271:6:rc522_halt	24	static

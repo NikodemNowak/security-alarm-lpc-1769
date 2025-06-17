@@ -1,0 +1,10 @@
+../src/uart2.c:86:12:I2CWrite.constprop.isra	56	static
+../src/uart2.c:104:13:writeReg	16	static
+../src/uart2.c:113:16:readReg	56	static
+../src/uart2.c:162:6:uart2_setBaudRate	8	static
+../src/uart2.c:140:6:uart2_init	16	static
+../src/uart2.c:198:6:uart2_send	16	static
+../src/uart2.c:227:6:uart2_sendString	8	static
+../src/uart2.c:257:10:uart2_receive	24	static
+../src/uart2.c:293:9:uart2_getModemStatus	0	static
+../src/uart2.c:298:6:uart2_setModemStatus	0	static
